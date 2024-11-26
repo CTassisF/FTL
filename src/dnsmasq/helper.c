@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -99,7 +99,7 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
     }
 
   /**** Pi-hole modification ****/
-  logg("Started dnsmasq helper");
+  logg("Started script helper");
   /******************************/
 
   /* ignore SIGTERM and SIGINT, so that we can clean up when the main process gets hit
@@ -430,6 +430,9 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 	      
 	      end = extradata + data.ed_len;
 	      buf = extradata;
+
+	      lua_pushnumber(lua, data.ed_len == 0 ? 1 : 0);
+	      lua_setfield(lua, -2, "data_missing");
 	      
 	      if (!is6)
 		buf = grab_extradata_lua(buf, end, "vendor_class");
@@ -457,7 +460,9 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 		  buf = grab_extradata_lua(buf, end, "subscriber_id");
 		  buf = grab_extradata_lua(buf, end, "remote_id");
 		}
-	      
+
+	      buf = grab_extradata_lua(buf, end, "requested_options");
+	      buf = grab_extradata_lua(buf, end, "mud_url");
 	      buf = grab_extradata_lua(buf, end, "tags");
 	      
 	      if (is6)
@@ -608,6 +613,9 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 	  
 	  end = extradata + data.ed_len;
 	  buf = extradata;
+
+	  if (data.ed_len == 0)
+	    my_setenv("DNSMASQ_DATA_MISSING", "1", &err);
 	  
 	  if (!is6)
 	    buf = grab_extradata(buf, end, "DNSMASQ_VENDOR_CLASS", &err);
@@ -636,11 +644,12 @@ int create_helper(int event_fd, int err_fd, uid_t uid, gid_t gid, long max_fd)
 	      buf = grab_extradata(buf, end, "DNSMASQ_CIRCUIT_ID", &err);
 	      buf = grab_extradata(buf, end, "DNSMASQ_SUBSCRIBER_ID", &err);
 	      buf = grab_extradata(buf, end, "DNSMASQ_REMOTE_ID", &err);
-	      buf = grab_extradata(buf, end, "DNSMASQ_REQUESTED_OPTIONS", &err);
 	    }
 	  
+	  buf = grab_extradata(buf, end, "DNSMASQ_REQUESTED_OPTIONS", &err);
+	  buf = grab_extradata(buf, end, "DNSMASQ_MUD_URL", &err);
 	  buf = grab_extradata(buf, end, "DNSMASQ_TAGS", &err);
-
+	  	  
 	  if (is6)
 	    buf = grab_extradata(buf, end, "DNSMASQ_RELAY_ADDRESS", &err);
 	  else

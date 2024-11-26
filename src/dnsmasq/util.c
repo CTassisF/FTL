@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -113,6 +113,19 @@ u64 rand64(void)
   outleft -= 2;
 
   return (u64)out[outleft+1] + (((u64)out[outleft]) << 32);
+}
+
+int rr_on_list(struct rrlist *list, unsigned short rr)
+{
+  while (list)
+    {
+      if (list->rr == rr)
+	return 1;
+
+      list = list->next;
+    }
+
+  return 0;
 }
 
 /* returns 1 if name is OK and ascii printable
@@ -280,11 +293,9 @@ unsigned char *do_rfc1035_name(unsigned char *p, char *sval, char *limit)
           if (limit && p + 1 > (unsigned char*)limit)
             return NULL;
 
-#ifdef HAVE_DNSSEC
-	  if (option_bool(OPT_DNSSEC_VALID) && *sval == NAME_ESCAPE)
+	  if (*sval == NAME_ESCAPE)
 	    *p++ = (*(++sval))-1;
 	  else
-#endif		
 	    *p++ = *sval;
 	}
       
@@ -336,6 +347,16 @@ void *whine_malloc(size_t size)
   return ret;
 }
 
+void *whine_realloc(void *ptr, size_t size)
+{
+  void *ret = realloc(ptr, size);
+
+  if (!ret)
+    my_syslog(LOG_ERR, _("failed to reallocate %d bytes"), (int) size);
+
+  return ret;
+}
+
 int sockaddr_isequal(const union mysockaddr *s1, const union mysockaddr *s2)
 {
   if (s1->sa.sa_family == s2->sa.sa_family)
@@ -351,6 +372,19 @@ int sockaddr_isequal(const union mysockaddr *s1, const union mysockaddr *s2)
 	  IN6_ARE_ADDR_EQUAL(&s1->in6.sin6_addr, &s2->in6.sin6_addr))
 	return 1;
     }
+  return 0;
+}
+
+int sockaddr_isnull(const union mysockaddr *s)
+{
+  if (s->sa.sa_family == AF_INET &&
+      s->in.sin_addr.s_addr == 0)
+    return 1;
+  
+  if (s->sa.sa_family == AF_INET6 &&
+      IN6_IS_ADDR_UNSPECIFIED(&s->in6.sin6_addr))
+    return 1;
+  
   return 0;
 }
 
@@ -445,6 +479,15 @@ time_t dnsmasq_time(void)
 #else
   return time(NULL);
 #endif
+}
+
+u32 dnsmasq_milliseconds(void)
+{
+  struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+
+  return (tv.tv_sec) * 1000 + (tv.tv_usec / 1000);
 }
 
 int netmask_length(struct in_addr mask)

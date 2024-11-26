@@ -15,7 +15,7 @@
 
 extern const char *regextype[];
 
-// Use TRE instead of GNU regex library (compiled into FTL itself)
+// Use TRE-Engine instead of GNU/MUSL regex libraries
 #define USE_TRE_REGEX
 
 #ifdef USE_TRE_REGEX
@@ -30,13 +30,12 @@ typedef struct {
 	bool available :1;
 	struct {
 		bool inverted :1;
-		bool query_type_inverted :1;
 		bool custom_ip4 :1;
 		bool custom_ip6 :1;
-		enum query_types query_type;
 		enum reply_type reply;
 		struct in_addr addr4;
 		struct in6_addr addr6;
+		uint32_t query_type;
 	} ext;
 	int database_id;
 	char *string;
@@ -44,8 +43,7 @@ typedef struct {
 } regexData;
 
 unsigned int get_num_regex(const enum regex_type regexid) __attribute__((pure));
-int match_regex(const char *input, DNSCacheData* dns_cache, const int clientID,
-                const enum regex_type regexid, const bool regextest);
+bool in_regex(const char *domain, DNSCacheData *dns_cache, const int clientID, const enum regex_type regexid);
 void allocate_regex_client_enabled(clientsData *client, const int clientID);
 void reload_per_client_regex(clientsData *client);
 void read_regex_from_database(void);

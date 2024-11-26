@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -553,11 +553,11 @@ char *whichdevice(void)
     return NULL;
   
   for (if_tmp = daemon->if_names; if_tmp; if_tmp = if_tmp->next)
-    if (if_tmp->name && (!if_tmp->used || strchr(if_tmp->name, '*')))
+    if (if_tmp->name && (!(if_tmp->flags & INAME_USED) || strchr(if_tmp->name, '*')))
       return NULL;
 
   for (found = NULL, iface = daemon->interfaces; iface; iface = iface->next)
-    if (iface->dhcp_ok)
+    if (iface->dhcp4_ok || iface->dhcp6_ok)
       {
 	if (!found)
 	  found = iface;
@@ -685,6 +685,7 @@ const struct opttab_t {
   { "client-machine-id", 97, 0 },
   { "posix-timezone", 100, OT_NAME }, /* RFC 4833, Sec. 2 */
   { "tzdb-timezone", 101, OT_NAME }, /* RFC 4833, Sec. 2 */
+  { "ipv6-only", 108, 4 | OT_DEC },  /* RFC 8925 */ 
   { "subnet-select", 118, OT_INTERNAL },
   { "domain-search", 119, OT_RFC1035_NAME },
   { "sip-server", 120, 0 },
@@ -721,6 +722,8 @@ static const struct opttab_t opttab6[] = {
   { "sntp-server", 31,  OT_ADDR_LIST },
   { "information-refresh-time", 32, OT_TIME },
   { "FQDN", 39, OT_INTERNAL | OT_RFC1035_NAME },
+  { "posix-timezone", 41, OT_NAME }, /* RFC 4833, Sec. 3 */
+  { "tzdb-timezone", 42, OT_NAME }, /* RFC 4833, Sec. 3 */
   { "ntp-server", 56, 0 /* OT_ADDR_LIST | OT_RFC1035_NAME */ },
   { "bootfile-url", 59, OT_NAME },
   { "bootfile-param", 60, OT_CSTRING },
@@ -835,7 +838,7 @@ char *option_string(int prot, unsigned int opt, unsigned char *val, int opt_len,
 		for (i = 0, j = 0; i < opt_len && j < buf_len ; i++)
 		  {
 		    char c = val[i];
-		    if (isprint((int)c))
+		    if (isprint((unsigned char)c))
 		      buf[j++] = c;
 		  }
 #ifdef HAVE_DHCP6
@@ -849,7 +852,7 @@ char *option_string(int prot, unsigned int opt, unsigned char *val, int opt_len,
 		    for (k = i + 1; k < opt_len && k < l && j < buf_len ; k++)
 		     {
 		       char c = val[k];
-		       if (isprint((int)c))
+		       if (isprint((unsigned char)c))
 			 buf[j++] = c;
 		     }
 		    i = l;
@@ -870,7 +873,7 @@ char *option_string(int prot, unsigned int opt, unsigned char *val, int opt_len,
 		    for (k = 0; k < len && j < buf_len; k++)
 		      {
 		       char c = *p++;
-		       if (isprint((int)c))
+		       if (isprint((unsigned char)c))
 			 buf[j++] = c;
 		     }
 		    i += len +2;
@@ -1017,7 +1020,10 @@ void log_relay(int family, struct dhcp_relay *relay)
 {
   int broadcast = relay->server.addr4.s_addr == 0;
   inet_ntop(family, &relay->local, daemon->addrbuff, ADDRSTRLEN);
-  inet_ntop(family, &relay->server, daemon->namebuff, ADDRSTRLEN); 
+  inet_ntop(family, &relay->server, daemon->namebuff, ADDRSTRLEN);
+
+  if (family == AF_INET && relay->port != DHCP_SERVER_PORT)
+    sprintf(daemon->namebuff + strlen(daemon->namebuff), "#%u", relay->port);
 
 #ifdef HAVE_DHCP6
   struct in6_addr multicast;
@@ -1025,7 +1031,11 @@ void log_relay(int family, struct dhcp_relay *relay)
   inet_pton(AF_INET6, ALL_SERVERS, &multicast);
 
   if (family == AF_INET6)
-    broadcast = IN6_ARE_ADDR_EQUAL(&relay->server.addr6, &multicast);
+    {
+      broadcast = IN6_ARE_ADDR_EQUAL(&relay->server.addr6, &multicast);
+      if (relay->port != DHCPV6_SERVER_PORT)
+	sprintf(daemon->namebuff + strlen(daemon->namebuff), "#%u", relay->port);
+    }
 #endif
   
   

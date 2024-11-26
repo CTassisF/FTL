@@ -18,7 +18,7 @@
 #undef recvfrom
 ssize_t FTLrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen, const char *file, const char *func, const int line)
 {
-    ssize_t ret = 0;
+	ssize_t ret = 0;
 	do
 	{
 		// Reset errno before trying to write
@@ -29,11 +29,20 @@ ssize_t FTLrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockadd
 	// incoming signal
 	while(ret < 0 && errno == EINTR);
 
-	// Final error checking (may have failed for some other reason then an
-	// EINTR = interrupted system call)
-	if(ret < 0)
-		logg("WARN: Could not recvfrom() in %s() (%s:%i): %s",
-             func, file, line, strerror(errno));
+	// Backup errno value
+	const int _errno = errno;
 
-    return ret;
+	// Final error checking. May have failed for some other reason then an
+	// EINTR = interrupted system call. In that case, log a warning However,
+	// if the error is EAGAIN, this is not an error, but just a non-blocking
+	// socket that has no data available or we ran into an (expected)
+	// timeout. In that case, do not log a warning
+	if(ret < 0 && errno != EAGAIN)
+		logg("WARN: Could not recvfrom() in %s() (%s:%i): %s",
+		     func, file, line, strerror(errno));
+
+	// Restore errno value
+	errno = _errno;
+
+	return ret;
 }

@@ -1,16 +1,17 @@
 /* Pi-hole: A black hole for Internet advertisements
-*  (c) 2020 Pi-hole, LLC (https://pi-hole.net)
+*  (c) 2022 Pi-hole, LLC (https://pi-hole.net)
 *  Network-wide ad blocking via your own hardware.
 *
 *  FTL Engine
-*  DHCP discover prototypes
+*  Embedded LUA scripts processor
 *
 *  This file is copyright under the latest version of the EUPL.
 *  Please see LICENSE file for your rights under this license. */
+#ifndef LUA_SCRIPTS_H
+#define LUA_SCRIPTS_H
 
-#ifndef DHCP_DISCOVER_H
-#define DHCP_DISCOVER_H
+static const char inspect_lua[] = {
+#include "inspect.lua.hex"
+};
 
-int run_dhcp_discover(void);
-
-#endif // DHCP_DISCOVER_H
+#endif // LUA_SCRIPTS_H

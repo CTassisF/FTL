@@ -63,8 +63,7 @@ int DB_save_queries(sqlite3 *db)
 		return DB_FAILED;
 
 	// Start database timer
-	if(config.debug & DEBUG_DATABASE)
-		timer_start(DATABASE_WRITE_TIMER);
+	timer_start(DATABASE_WRITE_TIMER);
 
 	// Open pihole-FTL.db database file if needed
 	bool db_opened = false;
@@ -373,6 +372,9 @@ int DB_save_queries(sqlite3 *db)
 			sqlite3_bind_null(query_stmt, 7);
 		}
 
+		const int cacheID = findCacheID(query->domainID, query->clientID, query->type, false);
+		DNSCacheData *cache = getDNSCache(cacheID, true);
+
 		// ADDITIONAL_INFO
 		if(query->status == QUERY_GRAVITY_CNAME ||
 		   query->status == QUERY_REGEX_CNAME ||
@@ -389,37 +391,29 @@ int DB_save_queries(sqlite3 *db)
 			sqlite3_bind_text(addinfo_stmt, 2, cname, len, SQLITE_STATIC);
 			if(sqlite3_step(addinfo_stmt) != SQLITE_DONE)
 			{
-				logg("Encountered error while trying to store addinfo in long-term database");
+				logg("Encountered error while trying to store addinfo in long-term database (CNAME)");
 				error = true;
 				break;
 			}
 			sqlite3_clear_bindings(addinfo_stmt);
 			sqlite3_reset(addinfo_stmt);
 		}
-		else if(query->status == QUERY_REGEX)
+		else if(cache != NULL && cache->domainlist_id > -1)
 		{
-			// Restore regex ID if applicable
-			const int cacheID = findCacheID(query->domainID, query->clientID, query->type);
-			DNSCacheData *cache = getDNSCache(cacheID, true);
-			if(cache != NULL)
-			{
-				sqlite3_bind_int(query_stmt, 8, ADDINFO_REGEX_ID);
-				sqlite3_bind_int(query_stmt, 9, cache->black_regex_idx);
+			sqlite3_bind_int(query_stmt, 8, ADDINFO_REGEX_ID);
+			sqlite3_bind_int(query_stmt, 9, cache->domainlist_id);
 
-				// Execute prepared addinfo statement and check if successful
-				sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_REGEX_ID);
-				sqlite3_bind_int(addinfo_stmt, 2, cache->black_regex_idx);
-				if(sqlite3_step(addinfo_stmt) != SQLITE_DONE)
-				{
-					logg("Encountered error while trying to store addinfo in long-term database");
-					error = true;
-					break;
-				}
-				sqlite3_clear_bindings(addinfo_stmt);
-				sqlite3_reset(addinfo_stmt);
+			// Execute prepared addinfo statement and check if successful
+			sqlite3_bind_int(addinfo_stmt, 1, ADDINFO_REGEX_ID);
+			sqlite3_bind_int(addinfo_stmt, 2, cache->domainlist_id);
+			if(sqlite3_step(addinfo_stmt) != SQLITE_DONE)
+			{
+				logg("Encountered error while trying to store addinfo in long-term database (domainlist_id)");
+				error = true;
+				break;
 			}
-			else
-				sqlite3_bind_null(query_stmt, 8);
+			sqlite3_clear_bindings(addinfo_stmt);
+			sqlite3_reset(addinfo_stmt);
 		}
 		else
 		{
@@ -766,7 +760,7 @@ void DB_read_queries(void)
 		}
 
 		const int status_int = sqlite3_column_int(stmt, 3);
-		if(status_int < QUERY_UNKNOWN || status_int > QUERY_STATUS_MAX)
+		if(status_int < QUERY_UNKNOWN || status_int >= QUERY_STATUS_MAX)
 		{
 			logg("DB warn: STATUS should be within [%i,%i] but is %i", QUERY_UNKNOWN, QUERY_STATUS_MAX-1, status_int);
 			continue;
@@ -845,7 +839,7 @@ void DB_read_queries(void)
 		{
 			// The field has been added for database version 12
 			dnssec = sqlite3_column_int(stmt, 10);
-			if(dnssec < DNSSEC_UNSPECIFIED || dnssec >= DNSSEC_ABANDONED)
+			if(dnssec < DNSSEC_UNSPECIFIED || dnssec > DNSSEC_ABANDONED)
 			{
 				logg("DB warn: DNSSEC value %i is invalid, %lli", dnssec, (long long)queryTimeStamp);
 				continue;
@@ -933,16 +927,17 @@ void DB_read_queries(void)
 				query->CNAME_domainID = CNAMEdomainID;
 			}
 		}
-		else if(status == QUERY_REGEX)
+		else if(sqlite3_column_bytes(stmt, 7) != 0)
 		{
-			// QUERY_REGEX: Set ID regex which was the reason for blocking
-			const int cacheID = findCacheID(query->domainID, query->clientID, query->type);
+			// Set ID of the domainlist entry that was the reason for permitting/blocking this query
+			// We assume the value in this field is said ID when it is not a CNAME-related domain
+			// (checked above) and the value of additional_info is not NULL (0 bytes storage size)
+			const int cacheID = findCacheID(query->domainID, query->clientID, query->type, true);
 			DNSCacheData *cache = getDNSCache(cacheID, true);
 			// Only load if
-			//  a) we have a chace entry
-			//  b) the value of additional_info is not NULL (0 bytes storage size)
-			if(cache != NULL && sqlite3_column_bytes(stmt, 7) != 0)
-				cache->black_regex_idx = sqlite3_column_int(stmt, 7);
+			//  a) we have a cache entry
+			if(cache != NULL)
+				cache->domainlist_id = sqlite3_column_int(stmt, 7);
 		}
 
 		// Increment status counters, we first have to add one to the count of
@@ -992,6 +987,7 @@ void DB_read_queries(void)
 				break;
 
 			case QUERY_CACHE: // Cached or local config
+			case QUERY_CACHE_STALE:
 				// Nothing to be done here
 				break;
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Only run tests on x86_64, x86_64-musl, and x86_32 targets
-if [[ ${CI} == "true" && "${CI_ARCH}" != "x86_64" &&  "${CI_ARCH}" != "x86_64-musl" && "${CI_ARCH}" != "x86_32" ]]; then
+# Only run tests on x86_* targets (where the CI can natively run the binaries)
+if [[ ${CI} == "true" && "${CI_ARCH}" != "x86_"* ]]; then
   echo "Skipping tests (CI_ARCH: ${CI_ARCH})!"
   exit 0
 fi
@@ -15,7 +15,7 @@ fi
 while pidof -s pihole-FTL > /dev/null; do
   pid="$(pidof -s pihole-FTL)"
   echo "Terminating running pihole-FTL process with PID ${pid}"
-  kill $pid
+  kill "$pid"
   sleep 1
 done
 
@@ -26,8 +26,8 @@ rm -f /etc/pihole/gravity.db /etc/pihole/pihole-FTL.db /var/log/pihole/pihole.lo
 mkdir -p /home/pihole /etc/pihole /run/pihole /var/log/pihole
 echo "" > /var/log/pihole/FTL.log
 echo "" > /var/log/pihole/pihole.log
-touch /run/pihole-FTL.pid /run/pihole-FTL.port dig.log ptr.log
-chown pihole:pihole /etc/pihole /run/pihole /var/log/pihole/pihole.log /var/log/pihole/FTL.log /run/pihole-FTL.pid /run/pihole-FTL.port
+touch /run/pihole-FTL.pid dig.log ptr.log
+chown pihole:pihole /etc/pihole /run/pihole /var/log/pihole/pihole.log /var/log/pihole/FTL.log /run/pihole-FTL.pid
 
 # Copy binary into a location the new user pihole can access
 cp ./pihole-FTL /home/pihole/pihole-FTL
@@ -59,10 +59,6 @@ bash test/pdns/setup.sh
 # Set restrictive umask
 OLDUMASK=$(umask)
 umask 0022
-
-# Prepare LUA scripts
-mkdir -p /opt/pihole/libs
-wget -O /opt/pihole/libs/inspect.lua https://ftl.pi-hole.net/libraries/inspect.lua
 
 # Start FTL
 if ! su pihole -s /bin/sh -c /home/pihole/pihole-FTL; then
@@ -108,14 +104,17 @@ if [[ $RET != 0 ]]; then
   echo ""
   echo -n "ptr.log: "
   curl_to_tricorder ./ptr.log
+  echo ""getallqueries
+  echo -n "getallqueries.log: "
+  curl_to_tricorder ./getallqueries.log
   echo ""
 fi
 
 # Kill pihole-FTL after having completed tests
-kill $(pidof pihole-FTL)
+kill "$(pidof pihole-FTL)"
 
 # Restore umask
-umask $OLDUMASK
+umask "$OLDUMASK"
 
 # Remove copied file
 rm /home/pihole/pihole-FTL

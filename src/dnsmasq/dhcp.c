@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -177,8 +177,7 @@ void dhcp_packet(time_t now, int pxe_fd)
     return;
   
 #ifdef HAVE_DUMPFILE
-  dump_packet(DUMP_DHCP, (void *)daemon->dhcp_packet.iov_base, sz, (union mysockaddr *)&dest, NULL,
-	      pxe_fd ? PXE_PORT : daemon->dhcp_server_port);
+  dump_packet_udp(DUMP_DHCP, (void *)daemon->dhcp_packet.iov_base, sz, (union mysockaddr *)&dest, NULL, fd);
 #endif
   
 #if defined (HAVE_LINUX_NETWORK)
@@ -298,7 +297,7 @@ void dhcp_packet(time_t now, int pxe_fd)
 	}
       
       for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next)
-	if (tmp->name && wildcard_match(tmp->name, ifr.ifr_name))
+	if (tmp->name && (tmp->flags & INAME_4) && wildcard_match(tmp->name, ifr.ifr_name))
 	  return;
       
       /* unlinked contexts/relays are marked by context->current == context */
@@ -464,8 +463,8 @@ void dhcp_packet(time_t now, int pxe_fd)
         dest.sin_addr = mess->yiaddr;
       dest.sin_port = htons(daemon->dhcp_client_port);
       
-      dump_packet(DUMP_DHCP, (void *)iov.iov_base, iov.iov_len, NULL,
-		  (union mysockaddr *)&dest, daemon->dhcp_server_port);
+      dump_packet_udp(DUMP_DHCP, (void *)iov.iov_base, iov.iov_len, NULL,
+		      (union mysockaddr *)&dest, fd);
 #endif
       
       send_via_bpf(mess, iov.iov_len, iface_addr, &ifr);
@@ -478,8 +477,8 @@ void dhcp_packet(time_t now, int pxe_fd)
 #endif
 
 #ifdef HAVE_DUMPFILE
-  dump_packet(DUMP_DHCP, (void *)iov.iov_base, iov.iov_len, NULL,
-	      (union mysockaddr *)&dest, daemon->dhcp_server_port);
+  dump_packet_udp(DUMP_DHCP, (void *)iov.iov_base, iov.iov_len, NULL,
+		  (union mysockaddr *)&dest, fd);
 #endif
   
   while(retry_send(sendmsg(fd, &msg, 0)));
@@ -917,14 +916,14 @@ void dhcp_read_ethers(void)
       
       lineno++;
       
-      while (strlen(buff) > 0 && isspace((int)buff[strlen(buff)-1]))
+      while (strlen(buff) > 0 && isspace((unsigned char)buff[strlen(buff)-1]))
 	buff[strlen(buff)-1] = 0;
       
       if ((*buff == '#') || (*buff == '+') || (*buff == 0))
 	continue;
       
-      for (ip = buff; *ip && !isspace((int)*ip); ip++);
-      for(; *ip && isspace((int)*ip); ip++)
+      for (ip = buff; *ip && !isspace((unsigned char)*ip); ip++);
+      for(; *ip && isspace((unsigned char)*ip); ip++)
 	*ip = 0;
       if (!*ip || parse_hex(buff, hwaddr, ETHER_ADDR_LEN, NULL, NULL) != ETHER_ADDR_LEN)
 	{
@@ -1121,7 +1120,7 @@ static int relay_upstream4(int iface_index, struct dhcp_packet *mess, size_t sz)
 	
 	to.sa.sa_family = AF_INET;
 	to.in.sin_addr = relay->server.addr4;
-	to.in.sin_port = htons(daemon->dhcp_server_port);
+	to.in.sin_port = htons(relay->port);
 	
 	/* Broadcasting to server. */
 	if (relay->server.addr4.s_addr == 0)
@@ -1147,8 +1146,8 @@ static int relay_upstream4(int iface_index, struct dhcp_packet *mess, size_t sz)
 	  fromsock.in.sin_port = htons(daemon->dhcp_server_port);
 	  fromsock.in.sin_addr = from.addr4;
 	  fromsock.sa.sa_family = AF_INET;
-	  
-	  dump_packet(DUMP_DHCP, (void *)mess, sz, &fromsock, &to, 0);
+
+	  dump_packet_udp(DUMP_DHCP, (void *)mess, sz, &fromsock, &to, -1);
 	}
 #endif
 	

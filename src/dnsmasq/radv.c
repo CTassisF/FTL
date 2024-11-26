@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -186,7 +186,8 @@ void icmp6_packet(time_t now)
     return;
   
   for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next)
-    if (tmp->name && wildcard_match(tmp->name, interface))
+    if (tmp->name && (tmp->flags & INAME_6) &&
+	wildcard_match(tmp->name, interface))
       return;
  
   if (packet[1] != 0)
@@ -203,7 +204,7 @@ void icmp6_packet(time_t now)
       int opt_sz;
       
 #ifdef HAVE_DUMPFILE
-      dump_packet(DUMP_RA, (void *)packet, sz, (union mysockaddr *)&from, NULL, -1);
+      dump_packet_icmp(DUMP_RA, (void *)packet, sz, (union mysockaddr *)&from, NULL);
 #endif           
       
       /* look for link-layer address option for logging */
@@ -560,7 +561,13 @@ static void send_ra_alias(time_t now, int iface, char *iface_name, struct in6_ad
     }
   
 #ifdef HAVE_DUMPFILE
-  dump_packet(DUMP_RA, (void *)daemon->outpacket.iov_base, save_counter(-1), NULL, (union mysockaddr *)&addr, -1);
+  {
+    struct sockaddr_in6 src;
+    src.sin6_family = AF_INET6;
+    src.sin6_addr = parm.link_local;
+    
+    dump_packet_icmp(DUMP_RA, (void *)daemon->outpacket.iov_base, save_counter(-1), (union mysockaddr *)&src, (union mysockaddr *)&addr);
+  }
 #endif
 
   while (retry_send(sendto(daemon->icmp6fd, daemon->outpacket.iov_base, 
@@ -829,7 +836,8 @@ time_t periodic_ra(time_t now)
 	{
 	  struct iname *tmp;
 	  for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next)
-	    if (tmp->name && wildcard_match(tmp->name, param.name))
+	    if (tmp->name && (tmp->flags & INAME_6) &&
+		wildcard_match(tmp->name, param.name))
 	      break;
 	  if (!tmp)
             {
@@ -928,7 +936,8 @@ static int iface_search(struct in6_addr *local,  int prefix,
     return 1;
 
   for (tmp = daemon->dhcp_except; tmp; tmp = tmp->next)
-    if (tmp->name && wildcard_match(tmp->name, param->name))
+    if (tmp->name && (tmp->flags & INAME_6) &&
+	wildcard_match(tmp->name, param->name))
       return 1;
 
   for (context = daemon->dhcp6; context; context = context->next)

@@ -15,13 +15,12 @@
 #include "../config.h"
 // logg()
 #include "../log.h"
-// match_regex()
-#include "../regex_r.h"
 // getstr()
 #include "../shmem.h"
 // SQLite3 prepared statement vectors
 #include "../vector.h"
 // log_subnet_warning()
+// logg_inaccessible_adlist
 #include "message-table.h"
 // getMACfromIP()
 #include "network-table.h"
@@ -48,6 +47,7 @@ static sqlite3 *gravity_db = NULL;
 static sqlite3_stmt* table_stmt = NULL;
 static sqlite3_stmt* auditlist_stmt = NULL;
 bool gravityDB_opened = false;
+static bool gravity_abp_format = false;
 
 // Table names corresponding to the enum defined in gravity-db.h
 static const char* tablename[] = { "vw_gravity", "vw_blacklist", "vw_whitelist", "vw_regex_blacklist", "vw_regex_whitelist" , "" };
@@ -94,6 +94,40 @@ void gravityDB_forked(void)
 
 	// Open the database
 	gravityDB_open();
+}
+
+static void gravity_check_ABP_format(void)
+{
+	// Check if we have a valid ABP format
+	// We do this by checking the "abp_domains" property in the "info" table
+
+	// Prepare statement
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(gravity_db,
+	                            "SELECT value FROM info WHERE property = 'abp_domains';",
+	                            -1, &stmt, NULL);
+
+	if( rc != SQLITE_OK )
+	{
+		logg("gravity_check_ABP_format() - SQL error prepare: %s", sqlite3_errstr(rc));
+		return;
+	}
+
+	// Execute statement
+	rc = sqlite3_step(stmt);
+	if( rc != SQLITE_ROW )
+	{
+		// No result
+		gravity_abp_format = false;
+		sqlite3_finalize(stmt);
+		return;
+	}
+
+	// Get result (SQLite3 stores 1 for TRUE, 0 for FALSE)
+	gravity_abp_format = sqlite3_column_int(stmt, 0) != 0;
+
+	// Finalize statement
+	sqlite3_finalize(stmt);
 }
 
 // Open gravity database
@@ -153,17 +187,16 @@ bool gravityDB_open(void)
 	//            BUT NOT google.de itself
 	// Example 3: *google.de
 	//            matches 'google.de' and all of its subdomains but
-	//            also other domains starting in google.de, like
+	//            also other domains ending in google.de, like
 	//            abcgoogle.de
 	rc = sqlite3_prepare_v3(gravity_db,
-	        "SELECT EXISTS("
-	          "SELECT domain, "
-	            "CASE WHEN substr(domain, 1, 1) = '*' " // Does the database string start in '*' ?
-	              "THEN '*' || substr(:input, - length(domain) + 1) " // If so: Crop the input domain and prepend '*'
-	              "ELSE :input " // If not: Use input domain directly for comparison
-	            "END matcher "
-	          "FROM domain_audit WHERE matcher = domain" // Match where (modified) domain equals the database domain
-	        ");", -1, SQLITE_PREPARE_PERSISTENT, &auditlist_stmt, NULL);
+	        "SELECT domain, "
+	          "CASE WHEN substr(domain, 1, 1) = '*' " // Does the database string start in '*' ?
+	            "THEN '*' || substr(:input, - length(domain) + 1) " // If so: Crop the input domain and prepend '*'
+	            "ELSE :input " // If not: Use input domain directly for comparison
+	          "END matcher "
+	        "FROM domain_audit WHERE matcher = domain" // Match where (modified) domain equals the database domain
+	        ";", -1, SQLITE_PREPARE_PERSISTENT, &auditlist_stmt, NULL);
 
 	if( rc != SQLITE_OK )
 	{
@@ -196,6 +229,10 @@ bool gravityDB_open(void)
 		logg("gravityDB_open() - Cannot set busy handler: %s", sqlite3_errstr(rc));
 	}
 
+	// Check (and remember in global variable) if there are any ABP-style
+	// entries in the database
+	gravity_check_ABP_format();
+
 	if(config.debug & DEBUG_DATABASE)
 		logg("gravityDB_open(): Successfully opened gravity.db");
 	return true;
@@ -210,11 +247,11 @@ bool gravityDB_reopen(void)
 	return gravityDB_open();
 }
 
-static char* get_client_querystr(const char* table, const char* groups)
+static char* get_client_querystr(const char *table, const char *column, const char *groups)
 {
 	// Build query string with group filtering
 	char *querystr = NULL;
-	if(asprintf(&querystr, "SELECT EXISTS(SELECT domain from %s WHERE domain = ? AND group_id IN (%s));", table, groups) < 1)
+	if(asprintf(&querystr, "SELECT %s from %s WHERE domain = ? AND group_id IN (%s);", column, table, groups) < 1)
 	{
 		logg("get_client_querystr(%s, %s) - asprintf() error", table, groups);
 		return NULL;
@@ -858,19 +895,14 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 		return false;
 
 	// Prepare whitelist statement
-	// We use SELECT EXISTS() as this is known to efficiently use the index
-	// We are only interested in whether the domain exists or not in the
-	// list but don't case about duplicates or similar. SELECT EXISTS(...)
-	// returns true as soon as it sees the first row from the query inside
-	// of EXISTS().
 	if(config.debug & DEBUG_DATABASE)
 		logg("gravityDB_open(): Preparing vw_whitelist statement for client %s", clientip);
-	querystr = get_client_querystr("vw_whitelist", getstr(client->groupspos));
+	querystr = get_client_querystr("vw_whitelist", "id", getstr(client->groupspos));
 	sqlite3_stmt* stmt = NULL;
 	int rc = sqlite3_prepare_v3(gravity_db, querystr, -1, SQLITE_PREPARE_PERSISTENT, &stmt, NULL);
 	if( rc != SQLITE_OK )
 	{
-		logg("gravityDB_open(\"SELECT EXISTS(... vw_whitelist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
+		logg("gravityDB_open(\"SELECT(... vw_whitelist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
 		gravityDB_close();
 		return false;
 	}
@@ -880,11 +912,11 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	// Prepare gravity statement
 	if(config.debug & DEBUG_DATABASE)
 		logg("gravityDB_open(): Preparing vw_gravity statement for client %s", clientip);
-	querystr = get_client_querystr("vw_gravity", getstr(client->groupspos));
+	querystr = get_client_querystr("vw_gravity", "domain", getstr(client->groupspos));
 	rc = sqlite3_prepare_v3(gravity_db, querystr, -1, SQLITE_PREPARE_PERSISTENT, &stmt, NULL);
 	if( rc != SQLITE_OK )
 	{
-		logg("gravityDB_open(\"SELECT EXISTS(... vw_gravity ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
+		logg("gravityDB_open(\"SELECT(... vw_gravity ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
 		gravityDB_close();
 		return false;
 	}
@@ -894,11 +926,11 @@ bool gravityDB_prepare_client_statements(clientsData *client)
 	// Prepare blacklist statement
 	if(config.debug & DEBUG_DATABASE)
 		logg("gravityDB_open(): Preparing vw_blacklist statement for client %s", clientip);
-	querystr = get_client_querystr("vw_blacklist", getstr(client->groupspos));
+	querystr = get_client_querystr("vw_blacklist", "id", getstr(client->groupspos));
 	rc = sqlite3_prepare_v3(gravity_db, querystr, -1, SQLITE_PREPARE_PERSISTENT, &stmt, NULL);
 	if( rc != SQLITE_OK )
 	{
-		logg("gravityDB_open(\"SELECT EXISTS(... vw_blacklist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
+		logg("gravityDB_open(\"SELECT(... vw_blacklist ...)\") - SQL error prepare: %s", sqlite3_errstr(rc));
 		gravityDB_close();
 		return false;
 	}
@@ -1146,7 +1178,7 @@ int gravityDB_count(const enum gravity_tables list)
 	return result;
 }
 
-static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, const char *listname)
+static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, const char *listname, int *domain_id)
 {
 	// Do not try to bind text to statement when database is not available
 	if(!gravityDB_opened && !gravityDB_open())
@@ -1180,10 +1212,10 @@ static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, con
 		sqlite3_clear_bindings(stmt);
 		return LIST_NOT_AVAILABLE;
 	}
-	else if(rc != SQLITE_ROW)
+	else if(rc != SQLITE_ROW && rc != SQLITE_DONE)
 	{
-		// Any return code that is neither SQLITE_BUSY not SQLITE_ROW
-		// is a real error we should log
+		// Any return code that is neither SQLITE_BUSY nor SQLITE_ROW or
+		// SQLITE_DONE is an error we should log
 		logg("domain_in_list(\"%s\", %p, %s): Failed to perform step: %s",
 		     domain, stmt, listname, sqlite3_errstr(rc));
 		sqlite3_reset(stmt);
@@ -1191,8 +1223,10 @@ static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, con
 		return LIST_NOT_AVAILABLE;
 	}
 
-	// Get result of query "SELECT EXISTS(...)"
-	const int result = sqlite3_column_int(stmt, 0);
+	// Get result of query (if available)
+	const int result = (rc == SQLITE_ROW) ? sqlite3_column_int(stmt, 0) : -1;
+	if(domain_id != NULL)
+		*domain_id = result;
 
 	if(config.debug & DEBUG_DATABASE)
 		logg("domain_in_list(\"%s\", %p, %s): %d", domain, stmt, listname, result);
@@ -1209,8 +1243,7 @@ static enum db_result domain_in_list(const char *domain, sqlite3_stmt *stmt, con
 	sqlite3_clear_bindings(stmt);
 
 	// Return if domain was found in current table
-	// SELECT EXISTS(...) either returns 0 (false) or 1 (true).
-	return (result == 1) ? FOUND : NOT_FOUND;
+	return (rc == SQLITE_ROW) ? FOUND : NOT_FOUND;
 }
 
 void gravityDB_reload_groups(clientsData* client)
@@ -1268,17 +1301,7 @@ enum db_result in_whitelist(const char *domain, DNSCacheData *dns_cache, clients
 	// We have to check both the exact whitelist (using a prepared database statement)
 	// as well the compiled regex whitelist filters to check if the current domain is
 	// whitelisted.
-	enum db_result on_whitelist = domain_in_list(domain, stmt, "whitelist");
-
-	// For performance reasons, the regex evaluations is executed only if the
-	// exact whitelist lookup does not deliver a positive match. This is an
-	// optimization as the database lookup will most likely hit (a) more domains
-	// and (b) will be faster (given a sufficiently large number of regex
-	// whitelisting filters).
-	if(on_whitelist == NOT_FOUND)
-		on_whitelist = match_regex(domain, dns_cache, client->id, REGEX_WHITELIST, false) != -1;
-
-	return on_whitelist;
+	return domain_in_list(domain, stmt, "whitelist", &dns_cache->domainlist_id);
 }
 
 enum db_result in_gravity(const char *domain, clientsData *client)
@@ -1306,10 +1329,105 @@ enum db_result in_gravity(const char *domain, clientsData *client)
 	if(stmt == NULL)
 		stmt = gravity_stmt->get(gravity_stmt, client->id);
 
-	return domain_in_list(domain, stmt, "gravity");
+	// Check if domain is exactly in gravity list
+	const enum db_result exact_match = domain_in_list(domain, stmt, "gravity", NULL);
+	if(config.debug & DEBUG_QUERIES)
+		logg("Checking if \"%s\" is in gravity: %s",
+		     domain, exact_match == FOUND ? "yes" : "no");
+	// Return for anything else than "not found" (e.g. "found" or "list not available")
+	if(exact_match != NOT_FOUND)
+		return exact_match;
+
+	// Return early if we are not supposed to check for ABP-style regex
+	// matches. This needs to be enabled in the config file as it is
+	// computationally expensive and not needed in most cases (HOSTS lists).
+	if(!gravity_abp_format)
+		return NOT_FOUND;
+
+	// Make a copy of the domain we will slowly truncate
+	// while extracting the individual components below
+	char *domainBuf = strdup(domain);
+
+	// Buffer to hold the constructed (sub)domain in ABP format
+	char *abpDomain = calloc(strlen(domain) + 4, sizeof(char));
+	// Prime abp matcher with minimal content
+	strcpy(abpDomain, "||^");
+
+	// Get number of domain parts (equals the number of dots + 1)
+	unsigned int N = 1u;
+	for(const char *p = domain; *p != '\0'; p++)
+		if(*p == '.')
+			N++;
+
+	// Loop over domain parts, building matcher from the TLD
+	// going down into domain and subdomains one by one
+	while(N-- > 0)
+	{
+		// Get domain to the *last* occurrence of '.'
+		char *ptr = strrchr(domainBuf, '.');
+
+		// If there are no '.' left in the domain buffer, we use the
+		// remainder which is the left-most domain component
+		if(ptr == NULL)
+			ptr = domainBuf;
+
+		// Get size of this component...
+		const size_t component_size = strlen(ptr);
+		// ... and use it to create a "gap" of the right size in our ABP
+		// format buffer
+		// Insert the domain component into the gap
+		if(ptr[0] == '.')
+		{
+			// If the component starts with a dot, we need
+			// to skip it when copying it into the ABP buffer
+			// Move excluding initial "||" but including final \0 (strlen-2+1 = strlen-1)
+			memmove(abpDomain+2+component_size-1, abpDomain+2, strlen(abpDomain)-1);
+			// Copy component bytes (excl. trailing null-byte)
+			memcpy(abpDomain+2, ptr+1, component_size-1);
+		}
+		else
+		{
+			// Otherwise, we copy the component as-is
+			memmove(abpDomain+2+component_size, abpDomain+2, strlen(abpDomain)-1);
+			// Copy component bytes (excl. trailing null-byte)
+			memcpy(abpDomain+2, ptr, component_size);
+		}
+		// Check if the constructed ABP-style domain is in the gravity list
+		const enum db_result abp_match = domain_in_list(abpDomain, stmt, "gravity", NULL);
+		if(config.debug & DEBUG_QUERIES)
+			logg("Checking if \"%s\" is in gravity: %s",
+			     abpDomain, abp_match == FOUND ? "yes" : "no");
+		// Return for anything else than "not found" (e.g. "found" or "list not available")
+		if(abp_match != NOT_FOUND)
+		{
+			free(domainBuf);
+			free(abpDomain);
+			return abp_match;
+		}
+		// Truncate the domain buffer to the left of the
+		// last dot, effectively removing the last component
+		const ssize_t truncate_pos = strlen(domainBuf)-component_size;
+		if(truncate_pos < 1)
+			// This was already the last iteration
+			break;
+
+		// Put a null-byte at the truncation position
+		domainBuf[truncate_pos] = '\0';
+
+		// Move the ABP buffer to the right by one byte ...
+		memmove(abpDomain+3, abpDomain+2, strlen(abpDomain));
+		// ... and insert '.' for the next iteration
+		abpDomain[2] = '.';
+	}
+
+	free(domainBuf);
+	free(abpDomain);
+
+	// Domain not found in gravity list
+	return NOT_FOUND;
 }
 
-enum db_result in_blacklist(const char *domain, clientsData *client)
+enum db_result in_blacklist(const char *domain, DNSCacheData *dns_cache, clientsData *client)
 {
 	// If list statement is not ready and cannot be initialized (e.g. no
 	// access to the database), we return false to prevent an FTL crash
@@ -1334,7 +1452,7 @@ enum db_result in_blacklist(const char *domain, clientsData *client)
 	if(stmt == NULL)
 		stmt = blacklist_stmt->get(blacklist_stmt, client->id);
 
-	return domain_in_list(domain, stmt, "blacklist");
+	return domain_in_list(domain, stmt, "blacklist", &dns_cache->domainlist_id);
 }
 
 bool in_auditlist(const char *domain)
@@ -1345,7 +1463,7 @@ bool in_auditlist(const char *domain)
 		return false;
 
 	// We check the domain_audit table for the given domain
-	return domain_in_list(domain, auditlist_stmt, "auditlist") == FOUND;
+	return domain_in_list(domain, auditlist_stmt, "auditlist", NULL) == FOUND;
 }
 
 bool gravityDB_get_regex_client_groups(clientsData* client, const unsigned int numregex, const regexData *regex,
@@ -1406,4 +1524,44 @@ bool gravityDB_get_regex_client_groups(clientsData* client, const unsigned int n
 	free(querystr);
 
 	return true;
+}
+
+void check_inaccessible_adlists(void)
+{
+
+	// check if any adlist was inaccessible in the last gravity run
+	// if so, gravity stored `status` in the adlist table with
+	// "3": List unavailable, Pi-hole used a local copy
+	// "4": List unavailable, there is no local copy available
+
+	// Do not proceed when database is not available
+	if(!gravityDB_opened && !gravityDB_open())
+	{
+		logg("check_inaccessible_adlists(): Gravity database not available");
+		return;
+	}
+
+	const char *querystr = "SELECT id, address FROM adlist WHERE status IN (3,4) AND enabled=1";
+
+	// Prepare query
+	sqlite3_stmt *query_stmt;
+	int rc = sqlite3_prepare_v2(gravity_db, querystr, -1, &query_stmt, NULL);
+	if(rc != SQLITE_OK){
+		logg("check_inaccessible_adlists(): %s - SQL error prepare: %s", querystr, sqlite3_errstr(rc));
+		gravityDB_close();
+		return;
+	}
+
+	// Perform query
+	while((rc = sqlite3_step(query_stmt)) == SQLITE_ROW)
+	{
+		int id = sqlite3_column_int(query_stmt, 0);
+		const char *address = (const char*)sqlite3_column_text(query_stmt, 1);
+
+		// log to the message table
+		logg_inaccessible_adlist(id, address);
+	}
+
+	// Finalize statement
+	sqlite3_finalize(query_stmt);
 }

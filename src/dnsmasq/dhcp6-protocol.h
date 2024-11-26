@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -63,6 +63,7 @@
 #define OPTION6_FQDN            39
 #define OPTION6_NTP_SERVER      56
 #define OPTION6_CLIENT_MAC      79
+#define OPTION6_MUD_URL         112
 
 #define NTP_SUBOPTION_SRV_ADDR  1
 #define NTP_SUBOPTION_MC_ADDR   2

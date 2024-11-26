@@ -18,7 +18,7 @@
 #undef sendto
 ssize_t FTLsendto(int sockfd, void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen, const char *file, const char *func, const int line)
 {
-    ssize_t ret = 0;
+	ssize_t ret = 0;
 	do
 	{
 		// Reset errno before trying to write
@@ -29,11 +29,18 @@ ssize_t FTLsendto(int sockfd, void *buf, size_t len, int flags, const struct soc
 	// incoming signal
 	while(ret < 0 && errno == EINTR);
 
-	// Final error checking (may have failed for some other reason then an
-	// EINTR = interrupted system call)
-	if(ret < 0)
-		logg("WARN: Could not sendto() in %s() (%s:%i): %s",
-             func, file, line, strerror(errno));
+	// Backup errno value
+	const int _errno = errno;
 
-    return ret;
+	// Final error checking (may have failed for some other reason then an
+	// EINTR = interrupted system call), also ignore EPROTONOSUPPORT (ARP scanning)
+	// and EPERM + ENOKEY (DHCP probing)
+	if(ret < 0 && errno != EPROTONOSUPPORT && errno != EPERM && errno != ENOKEY)
+		logg("WARN: Could not sendto() in %s() (%s:%i): %s",
+		     func, file, line, strerror(errno));
+
+	// Restore errno value
+	errno = _errno;
+
+	return ret;
 }

@@ -22,3 +22,10 @@ tools/macvendor.db
 
 # Test dependencies
 /node_modules/
+
+# Test Leftovers
+dig.log
+ptr.log
+
+# Compiled LUA scripts
+/src/lua/scripts/*.hex

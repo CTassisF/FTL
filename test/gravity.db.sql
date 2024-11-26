@@ -25,12 +25,16 @@ CREATE TABLE domainlist
 
 CREATE TABLE adlist
 (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	address TEXT UNIQUE NOT NULL,
-	enabled BOOLEAN NOT NULL DEFAULT 1,
-	date_added INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)),
-	date_modified INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)),
-	comment TEXT
+  id INTEGER PRIMARY KEY AUTOINCREMENT, 
+  address TEXT UNIQUE NOT NULL, 
+  enabled BOOLEAN NOT NULL DEFAULT 1, 
+  date_added INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)), 
+  date_modified INTEGER NOT NULL DEFAULT (cast(strftime('%s', 'now') as int)), 
+  comment TEXT,
+  date_updated INTEGER, 
+  number INTEGER NOT NULL DEFAULT 0, 
+  invalid_domains INTEGER NOT NULL DEFAULT 0, 
+  status INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE adlist_by_group
@@ -204,16 +208,21 @@ INSERT INTO domainlist VALUES(11,3,'^regex-REPLYv6$;reply=fe80::1234',1,15599288
 INSERT INTO domainlist VALUES(12,3,'^regex-REPLYv46$;reply=1.2.3.4;reply=fe80::1234',1,1559928803,1559928803,'');
 INSERT INTO domainlist VALUES(13,3,'^regex-A$;querytype=A',1,1559928803,1559928803,'');
 INSERT INTO domainlist VALUES(14,3,'^regex-notA$;querytype=!A',1,1559928803,1559928803,'');
+INSERT INTO domainlist VALUES(15,3,'^regex-multiple.ftl$;querytype=ANY,HTTPS,SVCB;reply=refused',1,1559928803,1559928803,'');
+INSERT INTO domainlist VALUES(16,3,'^regex-notMultiple.ftl$;querytype=!ANY,HTTPS,SVCB;reply=refused',1,1559928803,1559928803,'');
 
 /* Other special domains */
-INSERT INTO domainlist VALUES(15,1,'blacklisted-group-disabled.com',1,1559928803,1559928803,'Entry disabled by a group');
+INSERT INTO domainlist VALUES(17,1,'blacklisted-group-disabled.com',1,1559928803,1559928803,'Entry disabled by a group');
 
-INSERT INTO adlist VALUES(1,'https://hosts-file.net/ad_servers.txt',1,1559928803,1559928803,'Migrated from /etc/pihole/adlists.list');
+INSERT INTO adlist VALUES(1,'https://hosts-file.net/ad_servers.txt',1,1559928803,1559928803,'Migrated from /etc/pihole/adlists.list',1559928803,2000,2,1);
 
 INSERT INTO gravity VALUES('whitelisted.ftl',1);
 INSERT INTO gravity VALUES('gravity.ftl',1);
+INSERT INTO gravity VALUES('gravity-aaaa.ftl',1);
 INSERT INTO gravity VALUES('gravity-whitelisted.ftl',1);
-INSERT INTO info VALUES('gravity_count',3);
+INSERT INTO gravity VALUES('||special.gravity.ftl^',1);
+INSERT INTO info VALUES('gravity_count',5);
+INSERT INTO info VALUES('abp_domains',1);
 
 INSERT INTO "group" VALUES(1,0,'Test group',1559928803,1559928803,'A disabled test group');
 INSERT INTO domainlist_by_group VALUES(15,1);

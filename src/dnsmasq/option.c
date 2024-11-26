@@ -1,4 +1,4 @@
-/* dnsmasq is Copyright (c) 2000-2022 Simon Kelley
+/* dnsmasq is Copyright (c) 2000-2024 Simon Kelley
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -185,6 +185,17 @@ struct myoption {
 #define LOPT_STRIP_MAC     372
 #define LOPT_CONF_OPT      373
 #define LOPT_CONF_SCRIPT   374
+#define LOPT_RANDPORT_LIM  375
+#define LOPT_FAST_RETRY    376
+#define LOPT_STALE_CACHE   377
+#define LOPT_NORR          378
+#define LOPT_NO_IDENT      379
+#define LOPT_CACHE_RR      380
+#define LOPT_FILTER_RR     381
+#define LOPT_NO_DHCP6      382
+#define LOPT_NO_DHCP4      383
+#define LOPT_MAX_PROCS     384
+#define LOPT_DNSSEC_LIMITS 385
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -216,7 +227,7 @@ static const struct myoption opts[] =
     { "domain-suffix", 1, 0, 's' },
     { "interface", 1, 0, 'i' },
     { "listen-address", 1, 0, 'a' },
-    { "local-service", 0, 0, LOPT_LOCAL_SERVICE },
+    { "local-service", 2, 0, LOPT_LOCAL_SERVICE },
     { "bogus-priv", 0, 0, 'b' },
     { "bogus-nxdomain", 1, 0, 'B' },
     { "ignore-address", 1, 0, LOPT_IGNORE_ADDR },
@@ -224,6 +235,7 @@ static const struct myoption opts[] =
     { "filterwin2k", 0, 0, 'f' },
     { "filter-A", 0, 0, LOPT_FILTER_A },
     { "filter-AAAA", 0, 0, LOPT_FILTER_AAAA },
+    { "filter-rr", 1, 0, LOPT_FILTER_RR },
     { "pid-file", 2, 0, 'x' },
     { "strict-order", 0, 0, 'o' },
     { "server", 1, 0, 'S' },
@@ -237,11 +249,15 @@ static const struct myoption opts[] =
     { "localmx", 0, 0, 'L' },
     { "local-ttl", 1, 0, 'T' },
     { "no-negcache", 0, 0, 'N' },
+    { "no-round-robin", 0, 0, LOPT_NORR },
+    { "cache-rr", 1, 0, LOPT_CACHE_RR },
     { "addn-hosts", 1, 0, 'H' },
     { "hostsdir", 1, 0, LOPT_HOST_INOTIFY },
     { "query-port", 1, 0, 'Q' },
     { "except-interface", 1, 0, 'I' },
     { "no-dhcp-interface", 1, 0, '2' },
+    { "no-dhcpv4-interface", 1, 0, LOPT_NO_DHCP4 },
+    { "no-dhcpv6-interface", 1, 0, LOPT_NO_DHCP6 },
     { "domain-needed", 0, 0, 'D' },
     { "dhcp-lease-max", 1, 0, 'X' },
     { "bind-interfaces", 0, 0, 'z' },
@@ -353,6 +369,7 @@ static const struct myoption opts[] =
     { "dnssec-check-unsigned", 2, 0, LOPT_DNSSEC_CHECK },
     { "dnssec-no-timecheck", 0, 0, LOPT_DNSSEC_TIME },
     { "dnssec-timestamp", 1, 0, LOPT_DNSSEC_STAMP },
+    { "dnssec-limits", 1, 0, LOPT_DNSSEC_LIMITS },
     { "dhcp-relay", 1, 0, LOPT_RELAY },
     { "ra-param", 1, 0, LOPT_RA_PARAM },
     { "quiet-dhcp", 0, 0, LOPT_QUIET_DHCP },
@@ -370,6 +387,11 @@ static const struct myoption opts[] =
     { "log-debug", 0, 0, LOPT_LOG_DEBUG },
     { "umbrella", 2, 0, LOPT_UMBRELLA },
     { "quiet-tftp", 0, 0, LOPT_QUIET_TFTP },
+    { "port-limit", 1, 0, LOPT_RANDPORT_LIM },
+    { "fast-dns-retry", 2, 0, LOPT_FAST_RETRY },
+    { "use-stale-cache", 2, 0 , LOPT_STALE_CACHE },
+    { "no-ident", 0, 0, LOPT_NO_IDENT },
+    { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
     { NULL, 0, 0, 0 }
   };
 
@@ -397,8 +419,9 @@ static struct {
   { 'e', OPT_SELFMX, NULL, gettext_noop("Return self-pointing MX records for local hosts."), NULL },
   { 'E', OPT_EXPAND, NULL, gettext_noop("Expand simple names in /etc/hosts with domain-suffix."), NULL },
   { 'f', OPT_FILTER, NULL, gettext_noop("Don't forward spurious DNS requests from Windows hosts."), NULL },
-  { LOPT_FILTER_A, OPT_FILTER_A, NULL, gettext_noop("Don't include IPv4 addresses in DNS answers."), NULL },
-  { LOPT_FILTER_AAAA, OPT_FILTER_AAAA, NULL, gettext_noop("Don't include IPv6 addresses in DNS answers."), NULL },
+  { LOPT_FILTER_A, ARG_DUP, NULL, gettext_noop("Don't include IPv4 addresses in DNS answers."), NULL },
+  { LOPT_FILTER_AAAA, ARG_DUP, NULL, gettext_noop("Don't include IPv6 addresses in DNS answers."), NULL },
+  { LOPT_FILTER_RR, ARG_DUP, "<RR-type>", gettext_noop("Don't include resource records of the given type in DNS answers."), NULL },
   { 'F', ARG_DUP, "<ipaddr>,...", gettext_noop("Enable DHCP in the range given with lease duration."), NULL },
   { 'g', ARG_ONE, "<groupname>", gettext_noop("Change to this group after startup (defaults to %s)."), CHGRP },
   { 'G', ARG_DUP, "<hostspec>", gettext_noop("Set address or hostname for a specified machine."), NULL },
@@ -427,6 +450,7 @@ static struct {
   { 'M', ARG_DUP, "<bootp opts>", gettext_noop("Specify BOOTP options to DHCP server."), NULL },
   { 'n', OPT_NO_POLL, NULL, gettext_noop("Do NOT poll %s file, reload only on SIGHUP."), RESOLVFILE }, 
   { 'N', OPT_NO_NEG, NULL, gettext_noop("Do NOT cache failed search results."), NULL },
+  { LOPT_STALE_CACHE, ARG_ONE, "[=<max_expired>]", gettext_noop("Use expired cache data for faster reply."), NULL },
   { 'o', OPT_ORDER, NULL, gettext_noop("Use nameservers strictly in the order given in %s."), RESOLVFILE },
   { 'O', ARG_DUP, "<optspec>", gettext_noop("Specify options to be sent to DHCP clients."), NULL },
   { LOPT_FORCE, ARG_DUP, "<optspec>", gettext_noop("DHCP option sent even if the client does not request it."), NULL},
@@ -434,6 +458,7 @@ static struct {
   { 'P', ARG_ONE, "<integer>", gettext_noop("Maximum supported UDP packet size for EDNS.0 (defaults to %s)."), "*" },
   { 'q', ARG_DUP, NULL, gettext_noop("Log DNS queries."), NULL },
   { 'Q', ARG_ONE, "<integer>", gettext_noop("Force the originating port for upstream DNS queries."), NULL },
+  { LOPT_RANDPORT_LIM, ARG_ONE, "#ports", gettext_noop("Set maximum number of random originating ports for a query."), NULL },
   { 'R', OPT_NO_RESOLV, NULL, gettext_noop("Do NOT read resolv.conf."), NULL },
   { 'r', ARG_DUP, "<path>", gettext_noop("Specify path to resolv.conf (defaults to %s)."), RESOLVFILE }, 
   { LOPT_SERVERS_FILE, ARG_ONE, "<path>", gettext_noop("Specify path to file with server= options"), NULL },
@@ -447,6 +472,7 @@ static struct {
   { LOPT_MAXTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for maximum TTL to send to clients."), NULL },
   { LOPT_MAXCTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live ceiling for cache."), NULL },
   { LOPT_MINCTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live floor for cache."), NULL },
+  { LOPT_FAST_RETRY, ARG_ONE, "<milliseconds>", gettext_noop("Retry DNS queries after this many milliseconds."), NULL},
   { 'u', ARG_ONE, "<username>", gettext_noop("Change to this user after startup. (defaults to %s)."), CHUSER }, 
   { 'U', ARG_DUP, "set:<tag>,<class>", gettext_noop("Map DHCP vendor class to tag."), NULL },
   { 'v', 0, NULL, gettext_noop("Display dnsmasq version and copyright information."), NULL },
@@ -464,6 +490,8 @@ static struct {
   { '1', ARG_ONE, "[=<busname>]", gettext_noop("Enable the DBus interface for setting upstream servers, etc."), NULL },
   { LOPT_UBUS, ARG_ONE, "[=<busname>]", gettext_noop("Enable the UBus interface."), NULL },
   { '2', ARG_DUP, "<interface>", gettext_noop("Do not provide DHCP on this interface, only provide DNS."), NULL },
+  { LOPT_NO_DHCP6, ARG_DUP, "<interface>", gettext_noop("Do not provide DHCPv6 on this interface."), NULL },
+  { LOPT_NO_DHCP4, ARG_DUP, "<interface>", gettext_noop("Do not provide DHCPv4 on this interface."), NULL },
   { '3', ARG_DUP, "[=tag:<tag>]...", gettext_noop("Enable dynamic address allocation for bootp."), NULL },
   { '4', ARG_DUP, "set:<tag>,<mac address>", gettext_noop("Map MAC address (with wildcards) to option set."), NULL },
   { LOPT_BRIDGE, ARG_DUP, "<iface>,<alias>..", gettext_noop("Treat DHCP requests on aliases as arriving from interface."), NULL },
@@ -546,22 +574,27 @@ static struct {
   { LOPT_DNSSEC_CHECK, ARG_DUP, NULL, gettext_noop("Ensure answers without DNSSEC are in unsigned zones."), NULL },
   { LOPT_DNSSEC_TIME, OPT_DNSSEC_TIME, NULL, gettext_noop("Don't check DNSSEC signature timestamps until first cache-reload"), NULL },
   { LOPT_DNSSEC_STAMP, ARG_ONE, "<path>", gettext_noop("Timestamp file to verify system clock for DNSSEC"), NULL },
+  { LOPT_DNSSEC_LIMITS, ARG_ONE, "<limit>,..", gettext_noop("Set resource limits for DNSSEC validation"), NULL },
   { LOPT_RA_PARAM, ARG_DUP, "<iface>,[mtu:<value>|<interface>|off,][<prio>,]<intval>[,<lifetime>]", gettext_noop("Set MTU, priority, resend-interval and router-lifetime"), NULL },
   { LOPT_QUIET_DHCP, OPT_QUIET_DHCP, NULL, gettext_noop("Do not log routine DHCP."), NULL },
   { LOPT_QUIET_DHCP6, OPT_QUIET_DHCP6, NULL, gettext_noop("Do not log routine DHCPv6."), NULL },
   { LOPT_QUIET_RA, OPT_QUIET_RA, NULL, gettext_noop("Do not log RA."), NULL },
   { LOPT_LOG_DEBUG, OPT_LOG_DEBUG, NULL, gettext_noop("Log debugging information."), NULL }, 
-  { LOPT_LOCAL_SERVICE, OPT_LOCAL_SERVICE, NULL, gettext_noop("Accept queries only from directly-connected networks."), NULL },
+  { LOPT_LOCAL_SERVICE, ARG_ONE, NULL, gettext_noop("Accept queries only from directly-connected networks."), NULL },
   { LOPT_LOOP_DETECT, OPT_LOOP_DETECT, NULL, gettext_noop("Detect and remove DNS forwarding loops."), NULL },
   { LOPT_IGNORE_ADDR, ARG_DUP, "<ipaddr>", gettext_noop("Ignore DNS responses containing ipaddr."), NULL }, 
   { LOPT_DHCPTTL, ARG_ONE, "<ttl>", gettext_noop("Set TTL in DNS responses with DHCP-derived addresses."), NULL }, 
   { LOPT_REPLY_DELAY, ARG_ONE, "<integer>", gettext_noop("Delay DHCP replies for at least number of seconds."), NULL },
   { LOPT_RAPID_COMMIT, OPT_RAPID_COMMIT, NULL, gettext_noop("Enables DHCPv4 Rapid Commit option."), NULL },
-  { LOPT_DUMPFILE, ARG_ONE, "<path>", gettext_noop("Path to debug packet dump file"), NULL },
-  { LOPT_DUMPMASK, ARG_ONE, "<hex>", gettext_noop("Mask which packets to dump"), NULL },
+  { LOPT_DUMPFILE, ARG_ONE, "<path>", gettext_noop("Path to debug packet dump file."), NULL },
+  { LOPT_DUMPMASK, ARG_ONE, "<hex>", gettext_noop("Mask which packets to dump."), NULL },
   { LOPT_SCRIPT_TIME, OPT_LEASE_RENEW, NULL, gettext_noop("Call dhcp-script when lease expiry changes."), NULL },
   { LOPT_UMBRELLA, ARG_ONE, "[=<optspec>]", gettext_noop("Send Cisco Umbrella identifiers including remote IP."), NULL },
   { LOPT_QUIET_TFTP, OPT_QUIET_TFTP, NULL, gettext_noop("Do not log routine TFTP."), NULL },
+  { LOPT_NORR, OPT_NORR, NULL, gettext_noop("Suppress round-robin ordering of DNS records."), NULL },
+  { LOPT_NO_IDENT, OPT_NO_IDENT, NULL, gettext_noop("Do not add CHAOS TXT records."), NULL },
+  { LOPT_CACHE_RR, ARG_DUP, "<RR-type>", gettext_noop("Cache this DNS resource record type."), NULL },
+  { LOPT_MAX_PROCS, ARG_ONE, "<integer>", gettext_noop("Maximum number of concurrent tcp connections."), NULL },
   { 0, 0, NULL, NULL, NULL }
 }; 
 
@@ -847,115 +880,239 @@ static char *parse_mysockaddr(char *arg, union mysockaddr *addr)
   return NULL;
 }
 
-char *parse_server(char *arg, union mysockaddr *addr, union mysockaddr *source_addr, char *interface, u16 *flags)
+char *parse_server(char *arg, struct server_details *sdetails)
 {
-  int source_port = 0, serv_port = NAMESERVER_PORT;
-  char *portno, *source;
-  char *interface_opt = NULL;
-  int scope_index = 0;
-  char *scope_id;
+  sdetails->serv_port = NAMESERVER_PORT;
+  char *portno;
+  int ecode = 0;
+  struct addrinfo hints;
 
-  *interface = 0;
-
+  memset(&hints, 0, sizeof(struct addrinfo));
+  
+  *sdetails->interface = 0;
+  sdetails->addr_type = AF_UNSPEC;
+     
   if (strcmp(arg, "#") == 0)
     {
-      if (flags)
-	*flags |= SERV_USE_RESOLV;
+      if (sdetails->flags)
+	*sdetails->flags |= SERV_USE_RESOLV;
+      sdetails->addr_type = AF_LOCAL;
+      sdetails->valid = 1;
       return NULL;
     }
   
-  if ((source = split_chr(arg, '@')) && /* is there a source. */
-      (portno = split_chr(source, '#')) &&
-      !atoi_check16(portno, &source_port))
+  if ((sdetails->source = split_chr(arg, '@')) && /* is there a source. */
+      (portno = split_chr(sdetails->source, '#')) &&
+      !atoi_check16(portno, &sdetails->source_port))
     return _("bad port");
   
   if ((portno = split_chr(arg, '#')) && /* is there a port no. */
-      !atoi_check16(portno, &serv_port))
+      !atoi_check16(portno, &sdetails->serv_port))
     return _("bad port");
   
-  scope_id = split_chr(arg, '%');
+  sdetails->scope_id = split_chr(arg, '%');
   
-  if (source) {
-    interface_opt = split_chr(source, '@');
+  if (sdetails->source) {
+    sdetails->interface_opt = split_chr(sdetails->source, '@');
 
-    if (interface_opt)
+    if (sdetails->interface_opt)
       {
 #if defined(SO_BINDTODEVICE)
-	safe_strncpy(interface, source, IF_NAMESIZE);
-	source = interface_opt;
+	safe_strncpy(sdetails->interface, sdetails->source, IF_NAMESIZE);
+	sdetails->source = sdetails->interface_opt;
 #else
 	return _("interface binding not supported");
 #endif
       }
   }
 
-  if (inet_pton(AF_INET, arg, &addr->in.sin_addr) > 0)
+  if (inet_pton(AF_INET, arg, &sdetails->addr->in.sin_addr) > 0)
+      sdetails->addr_type = AF_INET;
+  else if (inet_pton(AF_INET6, arg, &sdetails->addr->in6.sin6_addr) > 0)
+      sdetails->addr_type = AF_INET6;
+  else 
     {
-      addr->in.sin_port = htons(serv_port);	
-      addr->sa.sa_family = source_addr->sa.sa_family = AF_INET;
-#ifdef HAVE_SOCKADDR_SA_LEN
-      source_addr->in.sin_len = addr->in.sin_len = sizeof(struct sockaddr_in);
+      /* if the argument is neither an IPv4 not an IPv6 address, it might be a
+	 hostname and we should try to resolve it to a suitable address. */
+      memset(&hints, 0, sizeof(hints));
+      /* The AI_ADDRCONFIG flag ensures that then IPv4 addresses are returned in
+         the result only if the local system has at least one IPv4 address
+         configured, and IPv6 addresses are returned only if the local system
+         has at least one IPv6 address configured. The loopback address is not
+         considered for this case as valid as a configured address. This flag is
+         useful on, for example, IPv4-only systems, to ensure that getaddrinfo()
+         does not return IPv6 socket addresses that would always fail in
+         subsequent connect() or bind() attempts. */
+      hints.ai_flags = AI_ADDRCONFIG;
+#if defined(HAVE_IDN) && defined(AI_IDN)
+      /* If the AI_IDN flag is specified and we have glibc 2.3.4 or newer, then
+         the node name given in node is converted to IDN format if necessary.
+         The source encoding is that of the current locale. */
+      hints.ai_flags |= AI_IDN;
 #endif
-      source_addr->in.sin_addr.s_addr = INADDR_ANY;
-      source_addr->in.sin_port = htons(daemon->query_port);
-      
-      if (source)
-	{
-	  if (flags)
-	    *flags |= SERV_HAS_SOURCE;
-	  source_addr->in.sin_port = htons(source_port);
-	  if (!(inet_pton(AF_INET, source, &source_addr->in.sin_addr) > 0))
-	    {
-#if defined(SO_BINDTODEVICE)
-	      if (interface_opt)
-		return _("interface can only be specified once");
-	      
-	      source_addr->in.sin_addr.s_addr = INADDR_ANY;
-	      safe_strncpy(interface, source, IF_NAMESIZE);
-#else
-	      return _("interface binding not supported");
-#endif
-	    }
-	}
-    }
-  else if (inet_pton(AF_INET6, arg, &addr->in6.sin6_addr) > 0)
-    {
-      if (scope_id && (scope_index = if_nametoindex(scope_id)) == 0)
-	return _("bad interface name");
-      
-      addr->in6.sin6_port = htons(serv_port);
-      addr->in6.sin6_scope_id = scope_index;
-      source_addr->in6.sin6_addr = in6addr_any; 
-      source_addr->in6.sin6_port = htons(daemon->query_port);
-      source_addr->in6.sin6_scope_id = 0;
-      addr->sa.sa_family = source_addr->sa.sa_family = AF_INET6;
-      addr->in6.sin6_flowinfo = source_addr->in6.sin6_flowinfo = 0;
-#ifdef HAVE_SOCKADDR_SA_LEN
-      addr->in6.sin6_len = source_addr->in6.sin6_len = sizeof(addr->in6);
-#endif
-      if (source)
-	{
-	  if (flags)
-	    *flags |= SERV_HAS_SOURCE;
-	  source_addr->in6.sin6_port = htons(source_port);
-	  if (inet_pton(AF_INET6, source, &source_addr->in6.sin6_addr) == 0)
-	    {
-#if defined(SO_BINDTODEVICE)
-	      if (interface_opt)
-		return _("interface can only be specified once");
-	      
-	      source_addr->in6.sin6_addr = in6addr_any;
-	      safe_strncpy(interface, source, IF_NAMESIZE);
-#else
-	      return _("interface binding not supported");
-#endif
-	    }
-	}
-    }
-  else
-    return _("bad address");
+      /* The value AF_UNSPEC indicates that getaddrinfo() should return socket
+         addresses for any address family (either IPv4 or IPv6, for example)
+         that can be used with node <arg> and service "domain". */
+      hints.ai_family = AF_UNSPEC;
 
+      /* Get addresses suitable for sending datagrams. We assume that we can use the
+	 same addresses for TCP connections. Settting this to zero gets each address
+	 threes times, for SOCK_STREAM, SOCK_RAW and SOCK_DGRAM, which is not useful. */
+      hints.ai_socktype = SOCK_DGRAM;
+
+      /* Get address associated with this hostname */
+      ecode = getaddrinfo(arg, NULL, &hints, &sdetails->hostinfo);
+      if (ecode == 0)
+	{
+	  /* The getaddrinfo() function allocated and initialized a linked list of
+	     addrinfo structures, one for each network address that matches node
+	     and service, subject to the restrictions imposed by our <hints>
+	     above, and returns a pointer to the start of the list in <hostinfo>.
+	     The items in the linked list are linked by the <ai_next> field. */
+	  sdetails->valid = 1;
+	  sdetails->orig_hostinfo = sdetails->hostinfo;
+	  return NULL;
+	}
+      else
+	{
+	  /* Lookup failed, return human readable error string */
+	  if (ecode == EAI_AGAIN)
+	    return _("Cannot resolve server name");
+	  else
+	    return _((char*)gai_strerror(ecode));
+	}
+    }
+  
+  sdetails->valid = 1;
   return NULL;
+}
+
+char *parse_server_addr(struct server_details *sdetails)
+{
+  if (sdetails->addr_type == AF_INET)
+    {
+      sdetails->addr->in.sin_port = htons(sdetails->serv_port);
+      sdetails->addr->sa.sa_family = sdetails->source_addr->sa.sa_family = AF_INET;
+#ifdef HAVE_SOCKADDR_SA_LEN
+      sdetails->source_addr->in.sin_len = sdetails->addr->in.sin_len = sizeof(struct sockaddr_in);
+#endif
+      sdetails->source_addr->in.sin_addr.s_addr = INADDR_ANY;
+      sdetails->source_addr->in.sin_port = htons(daemon->query_port);
+      
+      if (sdetails->source)
+	{
+	  if (sdetails->flags)
+	    *sdetails->flags |= SERV_HAS_SOURCE;
+	  sdetails->source_addr->in.sin_port = htons(sdetails->source_port);
+	  if (inet_pton(AF_INET, sdetails->source, &sdetails->source_addr->in.sin_addr) == 0)
+	    {
+	      if (inet_pton(AF_INET6, sdetails->source, &sdetails->source_addr->in6.sin6_addr) == 1)
+		{
+		  sdetails->source_addr->sa.sa_family = AF_INET6;
+		  /* When resolving a server IP by hostname, we can simply skip mismatching
+		     server / source IP pairs. Otherwise, when an IP address is given directly,
+		     this is a fatal error. */
+		  if (!sdetails->orig_hostinfo)
+		    return _("cannot use IPv4 server address with IPv6 source address");
+		}
+	      else
+		{
+#if defined(SO_BINDTODEVICE)
+		  if (sdetails->interface_opt)
+		    return _("interface can only be specified once");
+
+		  sdetails->source_addr->in.sin_addr.s_addr = INADDR_ANY;
+		  safe_strncpy(sdetails->interface, sdetails->source, IF_NAMESIZE);
+#else
+		  return _("interface binding not supported");
+#endif
+		}
+	    }
+	}
+    }
+  else if (sdetails->addr_type == AF_INET6)
+    {
+      if (sdetails->scope_id && (sdetails->scope_index = if_nametoindex(sdetails->scope_id)) == 0)
+	return _("bad interface name");
+
+      sdetails->addr->in6.sin6_port = htons(sdetails->serv_port);
+      sdetails->addr->in6.sin6_scope_id = sdetails->scope_index;
+      sdetails->source_addr->in6.sin6_addr = in6addr_any;
+      sdetails->source_addr->in6.sin6_port = htons(daemon->query_port);
+      sdetails->source_addr->in6.sin6_scope_id = 0;
+      sdetails->addr->sa.sa_family = sdetails->source_addr->sa.sa_family = AF_INET6;
+      sdetails->addr->in6.sin6_flowinfo = sdetails->source_addr->in6.sin6_flowinfo = 0;
+#ifdef HAVE_SOCKADDR_SA_LEN
+      sdetails->addr->in6.sin6_len = sdetails->source_addr->in6.sin6_len = sizeof(sdetails->addr->in6);
+#endif
+      if (sdetails->source)
+	{
+	  if (sdetails->flags)
+	    *sdetails->flags |= SERV_HAS_SOURCE;
+	  sdetails->source_addr->in6.sin6_port = htons(sdetails->source_port);
+	  if (inet_pton(AF_INET6, sdetails->source, &sdetails->source_addr->in6.sin6_addr) == 0)
+	    {
+	      if (inet_pton(AF_INET, sdetails->source, &sdetails->source_addr->in.sin_addr) == 1)
+		{
+		  sdetails->source_addr->sa.sa_family = AF_INET;
+		  /* When resolving a server IP by hostname, we can simply skip mismatching
+		     server / source IP pairs. Otherwise, when an IP address is given directly,
+		     this is a fatal error. */
+		  if(!sdetails->orig_hostinfo)
+		    return _("cannot use IPv6 server address with IPv4 source address");
+		}
+	      else
+		{
+#if defined(SO_BINDTODEVICE)
+		  if (sdetails->interface_opt)
+		  return _("interface can only be specified once");
+
+		  sdetails->source_addr->in6.sin6_addr = in6addr_any;
+		  safe_strncpy(sdetails->interface, sdetails->source, IF_NAMESIZE);
+#else
+		  return _("interface binding not supported");
+#endif
+		}
+	    }
+	}
+    }
+  else if (sdetails->addr_type != AF_LOCAL)
+    return _("bad address");
+  
+  return NULL;
+}
+
+int parse_server_next(struct server_details *sdetails)
+{
+  /* Looping over resolved addresses? */
+  if (sdetails->hostinfo)
+    {
+      /* Get address type */
+      sdetails->addr_type = sdetails->hostinfo->ai_family;
+
+      /* Get address */
+      if (sdetails->addr_type == AF_INET)
+	memcpy(&sdetails->addr->in.sin_addr,
+		&((struct sockaddr_in *) sdetails->hostinfo->ai_addr)->sin_addr,
+		sizeof(sdetails->addr->in.sin_addr));
+      else if (sdetails->addr_type == AF_INET6)
+	memcpy(&sdetails->addr->in6.sin6_addr,
+		&((struct sockaddr_in6 *) sdetails->hostinfo->ai_addr)->sin6_addr,
+		sizeof(sdetails->addr->in6.sin6_addr));
+
+      /* Iterate to the next available address */
+      sdetails->valid = sdetails->hostinfo->ai_next != NULL;
+      sdetails->hostinfo = sdetails->hostinfo->ai_next;
+      return 1;
+    }
+  else if (sdetails->valid)
+    {
+      /* When using an IP address, we return the address only once */
+      sdetails->valid = 0;
+      return 1;
+    }
+  /* Stop iterating here, we used all available addresses */
+  return 0;
 }
 
 static char *domain_rev4(int from_file, char *server, struct in_addr *addr4, int size)
@@ -968,22 +1125,29 @@ static char *domain_rev4(int from_file, char *server, struct in_addr *addr4, int
   union mysockaddr serv_addr, source_addr;
   char interface[IF_NAMESIZE+1];
   int count = 1, rem, addrbytes, addrbits;
-  
+  struct server_details sdetails;
+
+  memset(&sdetails, 0, sizeof(struct server_details));
+  sdetails.addr = &serv_addr;
+  sdetails.source_addr = &source_addr;
+  sdetails.interface = interface;
+  sdetails.flags = &flags;
+    
   if (!server)
     flags = SERV_LITERAL_ADDRESS;
-  else if ((string = parse_server(server, &serv_addr, &source_addr, interface, &flags)))
+  else if ((string = parse_server(server, &sdetails)))
     return string;
-
+  
   if (from_file)
     flags |= SERV_FROM_FILE;
-
+ 
   rem = size & 0x7;
   addrbytes = (32 - size) >> 3;
   addrbits = (32 - size) & 7;
   
   if (size > 32 || size < 1)
     return _("bad IPv4 prefix length");
-
+  
   /* Zero out last address bits according to CIDR mask */
   ((u8 *)addr4)[3-addrbytes] &= ~((1 << addrbits)-1);
   
@@ -997,23 +1161,43 @@ static char *domain_rev4(int from_file, char *server, struct in_addr *addr4, int
       *domain = 0;
       string = domain;
       msize = size/8;
-  
+      
       for (j = (rem == 0) ? msize-1 : msize; j >= 0; j--)
 	{ 
 	  int dig = ((unsigned char *)addr4)[j];
-      
+	  
 	  if (j == msize)
 	    dig += i;
-      
+	  
 	  string += sprintf(string, "%d.", dig);
 	}
-
+      
       sprintf(string, "in-addr.arpa");
 
-      if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
-	return  _("error");
-    }
+      if (flags & SERV_LITERAL_ADDRESS)
+	{
+	  if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
+	    return  _("error");
+	}
+      else
+	{
+	  /* Always reset server as valid here, so we can add the same upstream
+	     server address multiple times for each x.y.z.in-addr.arpa  */
+	  sdetails.valid = 1;
+	  while (parse_server_next(&sdetails))
+	    {
+	      if ((string = parse_server_addr(&sdetails)))
+		return string;
+	      
+	      if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
+		return  _("error");
+	    }
 
+	  if (sdetails.orig_hostinfo)
+	    freeaddrinfo(sdetails.orig_hostinfo);
+	}
+    }
+  
   return NULL;
 }
 
@@ -1027,10 +1211,17 @@ static char *domain_rev6(int from_file, char *server, struct in6_addr *addr6, in
   union mysockaddr serv_addr, source_addr;
   char interface[IF_NAMESIZE+1];
   int count = 1, rem, addrbytes, addrbits;
-
+  struct server_details sdetails;
+  
+  memset(&sdetails, 0, sizeof(struct server_details));
+  sdetails.addr = &serv_addr;
+  sdetails.source_addr = &source_addr;
+  sdetails.interface = interface;
+  sdetails.flags = &flags;
+   
   if (!server)
     flags = SERV_LITERAL_ADDRESS;
-  else if ((string = parse_server(server, &serv_addr, &source_addr, interface, &flags)))
+  else if ((string = parse_server(server, &sdetails)))
     return string;
 
   if (from_file)
@@ -1071,11 +1262,42 @@ static char *domain_rev6(int from_file, char *server, struct in6_addr *addr6, in
       
       sprintf(string, "ip6.arpa");
 
-      if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
-	return  _("error");
-    }
+      if (flags & SERV_LITERAL_ADDRESS)
+	{
+	  if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
+	    return  _("error");
+	}
+      else
+	{
+	  /* Always reset server as valid here, so we can add the same upstream
+	     server address multiple times for each x.y.z.ip6.arpa  */
+	  sdetails.valid = 1;
+	  while (parse_server_next(&sdetails))
+	    {
+	      if ((string = parse_server_addr(&sdetails)))
+		return string;
+	      
+	      if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, NULL))
+		return  _("error");
+	    }
 
+	  if (sdetails.orig_hostinfo)
+	    freeaddrinfo(sdetails.orig_hostinfo);
+	}
+    }
+  
   return NULL;
+}
+
+static void if_names_add(const char *ifname)
+{
+  struct iname *new = opt_malloc(sizeof(struct iname));
+  new->next = daemon->if_names;
+  daemon->if_names = new;
+  /* new->name may be NULL if someone does
+     "interface=" to disable all interfaces except loop. */
+  new->name = opt_string_alloc(ifname);
+  new->flags = 0;
 }
 
 #ifdef HAVE_DHCP
@@ -1206,7 +1428,6 @@ static void dhcp_opt_free(struct dhcp_opt *opt)
   free(opt->val);
   free(opt);
 }
-
 
 /* This is too insanely large to keep in-line in the switch */
 static int parse_dhcp_opt(char *errstr, char *arg, int flags)
@@ -2157,15 +2378,11 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 
     case LOPT_DHCP_HOST:     /* --dhcp-hostsfile */
     case LOPT_DHCP_OPTS:     /* --dhcp-optsfile */
-    case LOPT_DHCP_INOTIFY:  /* --dhcp-hostsdir */
-    case LOPT_DHOPT_INOTIFY: /* --dhcp-optsdir */
-    case LOPT_HOST_INOTIFY:  /* --hostsdir */
     case 'H':                /* --addn-hosts */
       {
 	struct hostsfile *new = opt_malloc(sizeof(struct hostsfile));
-	static unsigned int hosts_index = SRC_AH;
 	new->fname = opt_string_alloc(arg);
-	new->index = hosts_index++;
+	new->index = daemon->host_index++;
 	new->flags = 0;
 	if (option == 'H')
 	  {
@@ -2181,19 +2398,27 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  {
 	    new->next = daemon->dhcp_opts_file;
 	    daemon->dhcp_opts_file = new;
-	  } 	  
-	else 
-	  {
-	    new->next = daemon->dynamic_dirs;
-	    daemon->dynamic_dirs = new; 
-	    if (option == LOPT_DHCP_INOTIFY)
-	      new->flags |= AH_DHCP_HST;
-	    else if (option == LOPT_DHOPT_INOTIFY)
-	      new->flags |= AH_DHCP_OPT;
-	    else if (option == LOPT_HOST_INOTIFY)
-	      new->flags |= AH_HOSTS;
 	  }
 	
+	break;
+      }
+
+    case LOPT_DHCP_INOTIFY:  /* --dhcp-hostsdir */
+    case LOPT_DHOPT_INOTIFY: /* --dhcp-optsdir */
+    case LOPT_HOST_INOTIFY:  /* --hostsdir */
+      {
+	struct dyndir *new = opt_malloc(sizeof(struct dyndir));
+	new->dname = opt_string_alloc(arg);
+	new->flags = 0;
+	new->next = daemon->dynamic_dirs;
+	daemon->dynamic_dirs = new; 
+	if (option == LOPT_DHCP_INOTIFY)
+	new->flags |= AH_DHCP_HST;
+	else if (option == LOPT_DHOPT_INOTIFY)
+	new->flags |= AH_DHCP_OPT;
+	else if (option == LOPT_HOST_INOTIFY)
+	new->flags |= AH_HOSTS;
+
 	break;
       }
       
@@ -2369,173 +2594,182 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 
     case 's':         /* --domain */
     case LOPT_SYNTH:  /* --synth-domain */
-      if (strcmp (arg, "#") == 0)
-	set_option_bool(OPT_RESOLV_DOMAIN);
-      else
-	{
-	  char *d, *d_raw = arg;
-	  comma = split(arg);
-	  if (!(d = canonicalise_opt(d_raw)))
-	    ret_err(gen_err);
-	  else
-	    {
-	      free(d); /* allocate this again below. */
-	      if (comma)
-		{
-		  struct cond_domain *new = opt_malloc(sizeof(struct cond_domain));
-		  char *netpart;
-		  
-		  new->prefix = NULL;
-		  new->indexed = 0;
-		  new->prefixlen = 0;
-		  
-		  unhide_metas(comma);
-		  if ((netpart = split_chr(comma, '/')))
-		    {
-		      int msize;
-
-		      arg = split(netpart);
-		      if (!atoi_check(netpart, &msize))
-			ret_err_free(gen_err, new);
-		      else if (inet_pton(AF_INET, comma, &new->start))
-			{
-			  int mask;
-
-			  if (msize > 32)
-			     ret_err_free(_("bad prefix length"), new);
+      {
+	char *d, *d_raw = arg;
+	comma = split(arg);
+	if (!(d = canonicalise_opt(d_raw)))
+	  ret_err(gen_err);
+	else
+	  {
+	    free(d); /* allocate this again below. */
+	    if (comma)
+	      {
+		struct cond_domain *new = opt_malloc(sizeof(struct cond_domain));
+		char *netpart;
+		
+		new->prefix = NULL;
+		new->indexed = 0;
+		new->prefixlen = 0;
+		
+		unhide_metas(comma);
+		if ((netpart = split_chr(comma, '/')))
+		  {
+		    int msize;
+		    
+		    arg = split(netpart);
+		    if (!atoi_check(netpart, &msize))
+		      ret_err_free(gen_err, new);
+		    else if (inet_pton(AF_INET, comma, &new->start))
+		      {
+			int mask;
+			
+			if (msize > 32)
+			  ret_err_free(_("bad prefix length"), new);
+			
+			mask = (1 << (32 - msize)) - 1;
+			new->is6 = 0; 			  
+			new->start.s_addr = ntohl(htonl(new->start.s_addr) & ~mask);
+			new->end.s_addr = new->start.s_addr | htonl(mask);
+			if (arg)
+			  {
+			    if (option != 's')
+			      {
+				if (!(new->prefix = canonicalise_opt(arg)) ||
+				    strlen(new->prefix) > MAXLABEL - INET_ADDRSTRLEN)
+				  ret_err_free(_("bad prefix"), new);
+			      }
+			    else if (strcmp(arg, "local") != 0)
+			      ret_err_free(gen_err, new);
+			    else
+			      {
+				/* local=/xxx.yyy.zzz.in-addr.arpa/ */
+				domain_rev4(0, NULL, &new->start, msize);
+				
+				/* local=/<domain>/ */
+				/* d_raw can't failed to canonicalise here, checked above. */
+				add_update_server(SERV_LITERAL_ADDRESS, NULL, NULL, NULL, d_raw, NULL);
+			      }
+			  }
+		      }
+		    else if (inet_pton(AF_INET6, comma, &new->start6))
+		      {
+			u64 mask, addrpart = addr6part(&new->start6);
+			
+			if (msize > 128)
+			  ret_err_free(_("bad prefix length"), new);
+			
+			mask = (1LLU << (128 - msize)) - 1LLU;
+			
+			new->is6 = 1;
+			new->prefixlen = msize;
+			
+			/* prefix==64 overflows the mask calculation above */
+			if (msize <= 64)
+			  mask = (u64)-1LL;
 			  
-			  mask = (1 << (32 - msize)) - 1;
-			  new->is6 = 0; 			  
-			  new->start.s_addr = ntohl(htonl(new->start.s_addr) & ~mask);
-			  new->end.s_addr = new->start.s_addr | htonl(mask);
-			  if (arg)
-			    {
-			      if (option != 's')
-				{
-				  if (!(new->prefix = canonicalise_opt(arg)) ||
-				      strlen(new->prefix) > MAXLABEL - INET_ADDRSTRLEN)
-				    ret_err_free(_("bad prefix"), new);
-				}
-			      else if (strcmp(arg, "local") != 0)
-				ret_err_free(gen_err, new);
-			      else
-				{
-				  /* local=/xxx.yyy.zzz.in-addr.arpa/ */
-				  domain_rev4(0, NULL, &new->start, msize);
-				 				  
-				  /* local=/<domain>/ */
-				  /* d_raw can't failed to canonicalise here, checked above. */
-				  add_update_server(SERV_LITERAL_ADDRESS, NULL, NULL, NULL, d_raw, NULL);
-				}
-			    }
-			}
-		      else if (inet_pton(AF_INET6, comma, &new->start6))
-			{
-			  u64 mask, addrpart = addr6part(&new->start6);
-
-			  if (msize > 128)
-			    ret_err_free(_("bad prefix length"), new);
-
-			  mask = (1LLU << (128 - msize)) - 1LLU;
-
-			  new->is6 = 1;
-			  new->prefixlen = msize;
-			  
-			  /* prefix==64 overflows the mask calculation above */
-			  if (msize <= 64)
-			    mask = (u64)-1LL;
-			  
-			  new->end6 = new->start6;
-			  setaddr6part(&new->start6, addrpart & ~mask);
-			  setaddr6part(&new->end6, addrpart | mask);
-			  
-			  if (arg)
-			    {
-			      if (option != 's')
-				{
-				  if (!(new->prefix = canonicalise_opt(arg)) ||
-				      strlen(new->prefix) > MAXLABEL - INET6_ADDRSTRLEN)
-				    ret_err_free(_("bad prefix"), new);
-				}	
-			      else if (strcmp(arg, "local") != 0)
-				ret_err_free(gen_err, new);
-			      else 
-				{
-				  /* generate the equivalent of
-				     local=/xxx.yyy.zzz.ip6.arpa/ */
-				  domain_rev6(0, NULL, &new->start6, msize);
-				  
-				  /* local=/<domain>/ */
-				  /* d_raw can't failed to canonicalise here, checked above. */
-				  add_update_server(SERV_LITERAL_ADDRESS, NULL, NULL, NULL, d_raw, NULL);
-				}
-			    }
-			}
-		      else
-			ret_err_free(gen_err, new);
-		    }
-		  else
-		    {
-		      char *prefstr;
-		      arg = split(comma);
-		      prefstr = split(arg);
-
-		      if (inet_pton(AF_INET, comma, &new->start))
-			{
-			  new->is6 = 0;
-			  if (!arg)
-			    new->end.s_addr = new->start.s_addr;
-			  else if (!inet_pton(AF_INET, arg, &new->end))
-			    ret_err_free(gen_err, new);
-			}
-		      else if (inet_pton(AF_INET6, comma, &new->start6))
-			{
-			  new->is6 = 1;
-			  if (!arg)
-			    memcpy(&new->end6, &new->start6, IN6ADDRSZ);
-			  else if (!inet_pton(AF_INET6, arg, &new->end6))
-			    ret_err_free(gen_err, new);
-			}
-		      else 
-			ret_err_free(gen_err, new);
-
-		      if (option != 's' && prefstr)
-			{
-			  if (!(new->prefix = canonicalise_opt(prefstr)) ||
-			      strlen(new->prefix) > MAXLABEL - INET_ADDRSTRLEN)
-			    ret_err_free(_("bad prefix"), new);
-			}
-		    }
-
-		  new->domain = canonicalise_opt(d_raw);
-		  if (option  == 's')
-		    {
-		      new->next = daemon->cond_domain;
-		      daemon->cond_domain = new;
-		    }
-		  else
-		    {
-		      char *star;
-		      if (new->prefix &&
-			  (star = strrchr(new->prefix, '*'))
-			  && *(star+1) == 0)
-			{
-			  *star = 0;
-			  new->indexed = 1;
-			  if (new->is6 && new->prefixlen < 64)
-			    ret_err_free(_("prefix length too small"), new);
-			}
-		      new->next = daemon->synth_domains;
-		      daemon->synth_domains = new;
-		    }
-		}
-	      else if (option == 's')
-		daemon->domain_suffix = canonicalise_opt(d_raw);
-	      else 
-		ret_err(gen_err);
-	    }
-	}
-      break;
+			new->end6 = new->start6;
+			setaddr6part(&new->start6, addrpart & ~mask);
+			setaddr6part(&new->end6, addrpart | mask);
+			
+			if (arg)
+			  {
+			    if (option != 's')
+			      {
+				if (!(new->prefix = canonicalise_opt(arg)) ||
+				    strlen(new->prefix) > MAXLABEL - INET6_ADDRSTRLEN)
+				  ret_err_free(_("bad prefix"), new);
+			      }	
+			    else if (strcmp(arg, "local") != 0)
+			      ret_err_free(gen_err, new);
+			    else 
+			      {
+				/* generate the equivalent of
+				   local=/xxx.yyy.zzz.ip6.arpa/ */
+				domain_rev6(0, NULL, &new->start6, msize);
+				
+				/* local=/<domain>/ */
+				/* d_raw can't failed to canonicalise here, checked above. */
+				add_update_server(SERV_LITERAL_ADDRESS, NULL, NULL, NULL, d_raw, NULL);
+			      }
+			  }
+		      }
+		    else
+		      ret_err_free(gen_err, new);
+		  }
+		else
+		  {
+		    char *prefstr;
+		    arg = split(comma);
+		    prefstr = split(arg);
+		    
+		    if (inet_pton(AF_INET, comma, &new->start))
+		      {
+			new->is6 = 0;
+			if (!arg)
+			  new->end.s_addr = new->start.s_addr;
+			else if (!inet_pton(AF_INET, arg, &new->end))
+			  ret_err_free(gen_err, new);
+		      }
+		    else if (inet_pton(AF_INET6, comma, &new->start6))
+		      {
+			new->is6 = 1;
+			if (!arg)
+			  memcpy(&new->end6, &new->start6, IN6ADDRSZ);
+			else if (!inet_pton(AF_INET6, arg, &new->end6))
+			  ret_err_free(gen_err, new);
+		      }
+		    else if (option == 's')
+		      {
+			/* subnet from interface. */
+			new->interface = opt_string_alloc(comma);
+			new->al = NULL;
+		      }
+		    else
+		      ret_err_free(gen_err, new);
+		    
+		    if (option != 's' && prefstr)
+		      {
+			if (!(new->prefix = canonicalise_opt(prefstr)) ||
+			    strlen(new->prefix) > MAXLABEL - INET_ADDRSTRLEN)
+			  ret_err_free(_("bad prefix"), new);
+		      }
+		  }
+		
+		new->domain = canonicalise_opt(d_raw);
+		if (option  == 's')
+		  {
+		    new->next = daemon->cond_domain;
+		    daemon->cond_domain = new;
+		  }
+		else
+		  {
+		    char *star;
+		    if (new->prefix &&
+			(star = strrchr(new->prefix, '*'))
+			&& *(star+1) == 0)
+		      {
+			*star = 0;
+			new->indexed = 1;
+			if (new->is6 && new->prefixlen < 64)
+			  ret_err_free(_("prefix length too small"), new);
+		      }
+		    new->next = daemon->synth_domains;
+		    daemon->synth_domains = new;
+		  }
+	      }
+	    else if (option == 's')
+	      {
+		if (strcmp (arg, "#") == 0)
+		  set_option_bool(OPT_RESOLV_DOMAIN);
+		else
+		  daemon->domain_suffix = canonicalise_opt(d_raw);
+	      }
+	    else 
+	      ret_err(gen_err);
+	  }
+	
+	break;
+      }
       
     case LOPT_CPE_ID: /* --add-dns-client */
       if (arg)
@@ -2558,7 +2792,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 		ret_err(gen_err);
 	      
 	      for (p = arg; *p; p++)
-		if (!isxdigit((int)*p))
+		if (!isxdigit((unsigned char)*p))
 		  ret_err(gen_err);
 	      
 	      set_option_bool(OPT_UMBRELLA_DEVID);
@@ -2618,14 +2852,8 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
       
     case 'i':  /* --interface */
       do {
-	struct iname *new = opt_malloc(sizeof(struct iname));
-	comma = split(arg);
-	new->next = daemon->if_names;
-	daemon->if_names = new;
-	/* new->name may be NULL if someone does
-	   "interface=" to disable all interfaces except loop. */
-	new->name = opt_string_alloc(arg);
-	new->used = 0;
+        comma = split(arg);
+	if_names_add(arg);
 	arg = comma;
       } while (arg);
       break;
@@ -2638,10 +2866,13 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 
     case 'I':  /* --except-interface */
     case '2':  /* --no-dhcp-interface */
+    case LOPT_NO_DHCP6: /* --no-dhcpv6-interface */
+    case LOPT_NO_DHCP4: /* --no-dhcpv4-interface */
       do {
 	struct iname *new = opt_malloc(sizeof(struct iname));
 	comma = split(arg);
 	new->name = opt_string_alloc(arg);
+	new->flags = INAME_4 | INAME_6;
 	if (option == 'I')
 	  {
 	    new->next = daemon->if_except;
@@ -2654,6 +2885,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  }
 	else
 	  {
+	    if (option == LOPT_NO_DHCP6)
+	      new->flags &= ~INAME_4;
+	    if (option == LOPT_NO_DHCP4)
+	      new->flags &= ~INAME_6;
 	    new->next = daemon->dhcp_except;
 	    daemon->dhcp_except = new;
 	  }
@@ -2735,7 +2970,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	else
 	  ret_err_free(gen_err, new);
 
-	new->used = 0;
+	new->flags = 0;
 	if (option == 'a')
 	  {
 	    new->next = daemon->if_addrs;
@@ -2775,13 +3010,20 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
     case LOPT_LOCAL:     /*  --local */
     case 'A':            /*  --address */
       {
-	char *lastdomain = NULL, *domain = "";
+	char *lastdomain = NULL, *domain = "", *cur_domain;
 	u16 flags = 0;
 	char *err;
 	union all_addr addr;
 	union mysockaddr serv_addr, source_addr;
 	char interface[IF_NAMESIZE+1];
+	struct server_details sdetails;
 
+	memset(&sdetails, 0, sizeof(struct server_details));
+	sdetails.addr = &serv_addr;
+	sdetails.source_addr = &source_addr;
+	sdetails.interface = interface;
+	sdetails.flags = &flags;
+			
 	unhide_metas(arg);
 	
 	/* split the domain args, if any and skip to the end of them. */
@@ -2814,36 +3056,55 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  }
 	else
 	  {
-	    if ((err = parse_server(arg, &serv_addr, &source_addr, interface, &flags)))
+	    if ((err = parse_server(arg, &sdetails)))
 	      ret_err(err);
 	  }
 
 	if (servers_only && option == 'S')
 	  flags |= SERV_FROM_FILE;
-	
-	while (1)
-	  {
-	    /* server=//1.2.3.4 is special. */
-	    if (lastdomain)
-	      {
-		if (strlen(domain) == 0)
-		  flags |= SERV_FOR_NODOTS;
-		else
-		  flags &= ~SERV_FOR_NODOTS;
 
-		/* address=/#/ matches the same as without domain */
-		if (option == 'A' && domain[0] == '#' && domain[1] == 0)
-		  domain[0] = 0;
+	cur_domain = domain;
+	while ((flags & SERV_LITERAL_ADDRESS) || parse_server_next(&sdetails))
+	  {
+	    cur_domain = domain;
+
+	    if (!(flags & SERV_LITERAL_ADDRESS) && (err = parse_server_addr(&sdetails)))
+	      ret_err(err);
+
+	    /* When source is set only use DNS records of the same type and skip all others */
+	    if (flags & SERV_HAS_SOURCE && sdetails.addr_type != sdetails.source_addr->sa.sa_family)
+	      continue;
+
+	    while (1)
+	      {
+		/* server=//1.2.3.4 is special. */
+		if (lastdomain)
+		  {
+		    if (strlen(cur_domain) == 0)
+		      flags |= SERV_FOR_NODOTS;
+		    else
+		      flags &= ~SERV_FOR_NODOTS;
+		    
+		    /* address=/#/ matches the same as without domain, as does server=/#/.... for consistency. */
+		    if (cur_domain[0] == '#' && cur_domain[1] == 0)
+		      cur_domain[0] = 0;
+		  }
+		
+		if (!add_update_server(flags, sdetails.addr, sdetails.source_addr, sdetails.interface, cur_domain, &addr))
+		  ret_err(gen_err);
+		
+		if (!lastdomain || cur_domain == lastdomain)
+		  break;
+
+		cur_domain += strlen(cur_domain) + 1;
 	      }
-	    
-	    if (!add_update_server(flags, &serv_addr, &source_addr, interface, domain, &addr))
-	      ret_err(gen_err);
-	    
-	    if (!lastdomain || domain == lastdomain)
+
+	    if (flags & SERV_LITERAL_ADDRESS)
 	      break;
-	    
-	    domain += strlen(domain) + 1;
 	  }
+
+	if (sdetails.orig_hostinfo)
+	  freeaddrinfo(sdetails.orig_hostinfo);
 	
      	break;
       }
@@ -3158,6 +3419,15 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	ret_err(gen_err);
       else if (daemon->max_logs > 100)
 	daemon->max_logs = 100;
+      break;
+
+    case LOPT_LOCAL_SERVICE:  /* --local-service */
+      if (!arg || !strcmp(arg, "net"))
+	set_option_bool(OPT_LOCAL_SERVICE);
+      else if (!strcmp(arg, "host"))
+	set_option_bool(OPT_LOCALHOST_SERVICE);
+      else
+	ret_err(gen_err);
       break;  
 
     case 'P': /* --edns-packet-max */
@@ -3176,6 +3446,11 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	 and disable random ports */
       if (daemon->query_port == 0)
 	daemon->osport = 1;
+      break;
+
+    case LOPT_RANDPORT_LIM: /* --port-limit */
+      if (!atoi_check(arg, &daemon->randport_limit) || (daemon->randport_limit < 1))
+	ret_err(gen_err);
       break;
       
     case 'T':         /* --local-ttl */
@@ -3212,7 +3487,71 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  daemon->local_ttl = (unsigned long)ttl;
 	break;
       }
+
+    case LOPT_FAST_RETRY: /* --fast-dns-retry */
+      daemon->fast_retry_timeout = TIMEOUT;
       
+      if (!arg)
+	daemon->fast_retry_time = DEFAULT_FAST_RETRY;
+      else
+	{
+	  int retry;
+	  
+	  comma = split(arg);
+	  if (!atoi_check(arg, &retry) || retry < 50)
+	    ret_err(gen_err);
+	  daemon->fast_retry_time = retry;
+	  
+	  if (comma)
+	    {
+	      if (!atoi_check(comma, &retry))
+		ret_err(gen_err);
+	      daemon->fast_retry_timeout = retry/1000;
+	    }
+	}
+      break;
+
+    case LOPT_CACHE_RR: /* --cache-rr */
+    case LOPT_FILTER_RR: /* --filter-rr */
+    case LOPT_FILTER_A: /* --filter-A */
+    case LOPT_FILTER_AAAA: /* --filter-AAAA */
+      while (1) {
+	int type;
+	struct rrlist *new;
+
+	comma = NULL;
+
+	if (option == LOPT_FILTER_A)
+	  type = T_A;
+	else if (option == LOPT_FILTER_AAAA)
+	  type = T_AAAA;
+	else
+	  {
+	    comma = split(arg);
+	    if (!atoi_check(arg, &type) && (type = rrtype(arg)) == 0)
+	      ret_err(_("bad RR type"));
+	  }
+	
+	new = opt_malloc(sizeof(struct rrlist));
+	new->rr = type;
+
+	if (option == LOPT_CACHE_RR)
+	  {
+	    new->next = daemon->cache_rr;
+	    daemon->cache_rr = new;
+	  }
+	else
+	  {
+	    new->next = daemon->filter_rr;
+	    daemon->filter_rr = new;
+	  }
+	
+	if (!comma) break;
+	arg = comma;
+      }
+      break;
+      
+            
 #ifdef HAVE_DHCP
     case 'X': /* --dhcp-lease-max */
       if (!atoi_check(arg, &daemon->dhcp_max))
@@ -4331,6 +4670,11 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  {
 	    if (inet_pton(AF_INET, arg, &new->local))
 	      {
+		char *hash = split_chr(two, '#');
+
+		if (!hash || !atoi_check16(hash, &new->port))
+		  new->port = DHCP_SERVER_PORT;
+		
 		if (!inet_pton(AF_INET, two, &new->server))
 		  {
 		    new->server.addr4.s_addr = 0;
@@ -4349,6 +4693,11 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 #ifdef HAVE_DHCP6
 	    else if (inet_pton(AF_INET6, arg, &new->local))
 	      {
+		char *hash = split_chr(two, '#');
+
+		if (!hash || !atoi_check16(hash, &new->port))
+		  new->port = DHCPV6_SERVER_PORT;
+
 		if (!inet_pton(AF_INET6, two, &new->server))
 		  {
 		    inet_pton(AF_INET6, ALL_SERVERS, &new->server.addr6);
@@ -4579,7 +4928,7 @@ err:
 	    new->target = target;
 	    new->ttl = ttl;
 
-	    for (arg += arglen+1; *arg && isspace(*arg); arg++);
+	    for (arg += arglen+1; *arg && isspace((unsigned char)*arg); arg++);
 	  }
       
 	break;
@@ -4897,7 +5246,43 @@ err:
 	break;
       }
 
+    case LOPT_STALE_CACHE: /* --use-stale-cache */
+      {
+	int max_expiry = STALE_CACHE_EXPIRY;
+	if (arg)
+	  {
+	    /* Don't accept negative TTLs here, they'd have the counter-intuitive
+	       side-effect of evicting cache records before they expire */
+	    if (!atoi_check(arg, &max_expiry) || max_expiry < 0)
+	      ret_err(gen_err);
+	    /* Store "serve expired forever" as -1 internally, the option isn't
+	       active for daemon->cache_max_expiry == 0 */
+	    if (max_expiry == 0)
+	      max_expiry = -1;
+	  }
+	daemon->cache_max_expiry = max_expiry;
+	break;
+      }
+
 #ifdef HAVE_DNSSEC
+    case LOPT_DNSSEC_LIMITS:
+      {
+	int lim, val;
+
+	for (lim = LIMIT_SIG_FAIL; arg && lim < LIMIT_MAX ;  lim++, arg = comma)
+	  {
+	    comma = split(arg);
+
+	    if (!atoi_check(arg, &val))
+	      ret_err(gen_err);
+
+	    if (val != 0)
+	      daemon->limit[lim] = val;
+	  }
+	
+	break;
+      }
+      
     case LOPT_DNSSEC_STAMP: /* --dnssec-timestamp */
       daemon->timestamp_file = opt_string_alloc(arg); 
       break;
@@ -4952,7 +5337,7 @@ err:
 	unhide_metas(keyhex);
 	/* 4034: "Whitespace is allowed within digits" */
 	for (cp = keyhex; *cp; )
-	  if (isspace(*cp))
+	  if (isspace((unsigned char)*cp))
 	    for (cp1 = cp; *cp1; cp1++)
 	      *cp1 = *(cp1+1);
 	  else
@@ -4969,7 +5354,17 @@ err:
 	break;
       }
 #endif
-		
+
+    case LOPT_MAX_PROCS: /* --max-tcp-connections */
+      {
+	int max_procs;
+	/* Don't accept numbers less than 1. */
+	if (!atoi_check(arg, &max_procs) || max_procs < 1)
+	  ret_err(gen_err);
+	daemon->max_procs = max_procs;
+	break;
+      }
+
     default:
       ret_err(_("unsupported option (check that dnsmasq was compiled with DHCP/TFTP/DNSSEC/DBus support)"));
       
@@ -4978,26 +5373,20 @@ err:
   return 1;
 }
 
-static void read_file(char *file, FILE *f, int hard_opt)	
+static void read_file(char *file, FILE *f, int hard_opt, int from_script)	
 {
   volatile int lineno = 0;
   char *buff = daemon->namebuff;
   
   while (fgets(buff, MAXDNAME, f))
     {
-      int white, i, script = 0;
+      int white, i;
       volatile int option;
       char *errmess, *p, *arg, *start;
       size_t len;
 
-      if (hard_opt == LOPT_CONF_SCRIPT)
-	{
-	  hard_opt = 0;
-	  script = 1;
-	}
-      
       option = (hard_opt == LOPT_REV_SERV) ? 0 : hard_opt;
- 
+
       /* Memory allocation failure longjmps here if mem_recover == 1 */ 
       if (option != 0 || hard_opt == LOPT_REV_SERV)
 	{
@@ -5005,7 +5394,7 @@ static void read_file(char *file, FILE *f, int hard_opt)
 	    continue;
 	  mem_recover = 1;
 	}
-      
+
       arg = NULL;
       lineno++;
       errmess = NULL;
@@ -5046,7 +5435,7 @@ static void read_file(char *file, FILE *f, int hard_opt)
 	      memmove(p, p+1, strlen(p+1)+1);
 	    }
 
-	  if (isspace(*p))
+	  if (isspace((unsigned char)*p))
 	    {
 	      *p = ' ';
 	      white = 1;
@@ -5111,7 +5500,7 @@ static void read_file(char *file, FILE *f, int hard_opt)
 	  
       if (errmess || !one_opt(option, arg, daemon->namebuff, _("error"), 0, hard_opt == LOPT_REV_SERV))
 	{
-	  if (script)
+	  if (from_script)
 	    sprintf(daemon->namebuff + strlen(daemon->namebuff), _(" in output from %s"), file);
 	  else
 	    sprintf(daemon->namebuff + strlen(daemon->namebuff), _(" at line %d of %s"), lineno, file);
@@ -5157,8 +5546,14 @@ static int one_file(char *file, int hard_opt)
       hard_opt = 0;
       nofile_ok = 1;
     }
-  
-  if (hard_opt == 0 && strcmp(file, "-") == 0)
+
+   if (hard_opt == LOPT_CONF_SCRIPT)
+     {
+       hard_opt = 0;
+       do_popen = 1;
+     }
+   
+   if (hard_opt == 0 && !do_popen && strcmp(file, "-") == 0)
     {
       if (read_stdin == 1)
 	return 1;
@@ -5171,12 +5566,6 @@ static int one_file(char *file, int hard_opt)
       /* ignore repeated files. */
       struct stat statbuf;
     
-      if (hard_opt == LOPT_CONF_SCRIPT)
-	{
-	  hard_opt = 0;
-	  do_popen = 1;
-	}
-      
       if (hard_opt == 0 && stat(file, &statbuf) == 0)
 	{
 	  struct fileread *r;
@@ -5215,7 +5604,7 @@ static int one_file(char *file, int hard_opt)
 	} 
     }
   
-  read_file(file, f, do_popen ? LOPT_CONF_SCRIPT : hard_opt);
+   read_file(file, f, hard_opt, do_popen);
 
   if (do_popen)
     {
@@ -5369,7 +5758,7 @@ void read_servers_file(void)
     }
   
   mark_servers(SERV_FROM_FILE);
-  read_file(daemon->servers_file, f, LOPT_REV_SERV);
+  read_file(daemon->servers_file, f, LOPT_REV_SERV, 0);
   fclose(f);
   cleanup_servers();
   check_servers(0);
@@ -5396,11 +5785,11 @@ static void clear_dynamic_conf(void)
     }
 }
 
-static void clear_dynamic_opt(void)
+static void clear_dhcp_opt(struct dhcp_opt **dhcp_opts)
 {
   struct dhcp_opt *opts, *cp, **up;
 
-  for (up = &daemon->dhcp_opts, opts = daemon->dhcp_opts; opts; opts = cp)
+  for (up = dhcp_opts, opts = *dhcp_opts; opts; opts = cp)
     {
       cp = opts->next;
       
@@ -5412,6 +5801,14 @@ static void clear_dynamic_opt(void)
       else
 	up = &opts->next;
     }
+}
+
+static void clear_dynamic_opt(void)
+{
+  clear_dhcp_opt(&daemon->dhcp_opts);
+#ifdef HAVE_DHCP6
+  clear_dhcp_opt(&daemon->dhcp_opts6);
+#endif
 }
 
 void reread_dhcp(void)
@@ -5458,15 +5855,21 @@ void read_opts(int argc, char **argv, char *compile_opts)
 {
   size_t argbuf_size = MAXDNAME;
   char *argbuf = opt_malloc(argbuf_size);
-  char *buff = opt_malloc(MAXDNAME);
+  /* Note that both /000 and '.' are allowed within labels. These get
+     represented in presentation format using NAME_ESCAPE as an escape
+     character. In theory, if all the characters in a name were /000 or
+     '.' or NAME_ESCAPE then all would have to be escaped, so the 
+     presentation format would be twice as long as the spec. */
+  char *buff = opt_malloc((MAXDNAME * 2) + 1);
   int option, testmode = 0;
   char *arg, *conffile = NULL;
-      
+  
   opterr = 0;
 
   daemon = opt_malloc(sizeof(struct daemon));
   memset(daemon, 0, sizeof(struct daemon));
   daemon->namebuff = buff;
+  daemon->workspacename = safe_malloc((MAXDNAME * 2) + 1);
   daemon->addrbuff = safe_malloc(ADDRSTRLEN);
   
   /* Set defaults - everything else is zero or NULL */
@@ -5488,28 +5891,19 @@ void read_opts(int argc, char **argv, char *compile_opts)
   daemon->soa_refresh = SOA_REFRESH;
   daemon->soa_retry = SOA_RETRY;
   daemon->soa_expiry = SOA_EXPIRY;
+  daemon->randport_limit = 1;
+  daemon->host_index = SRC_AH;
+  daemon->max_procs = MAX_PROCS;
+#ifdef HAVE_DNSSEC
+  daemon->limit[LIMIT_SIG_FAIL] = DNSSEC_LIMIT_SIG_FAIL;
+  daemon->limit[LIMIT_CRYPTO] = DNSSEC_LIMIT_CRYPTO;
+  daemon->limit[LIMIT_WORK] = DNSSEC_LIMIT_WORK;
+  daemon->limit[LIMIT_NSEC3_ITERS] = DNSSEC_LIMIT_NSEC3_ITERS;
+#endif
   
-#ifndef NO_ID
-  add_txt("version.bind", "dnsmasq-" VERSION, 0 );
-  add_txt("authors.bind", "Simon Kelley", 0);
-  add_txt("copyright.bind", COPYRIGHT, 0);
-  add_txt("cachesize.bind", NULL, TXT_STAT_CACHESIZE);
-  add_txt("insertions.bind", NULL, TXT_STAT_INSERTS);
-  add_txt("evictions.bind", NULL, TXT_STAT_EVICTIONS);
-  add_txt("misses.bind", NULL, TXT_STAT_MISSES);
-  add_txt("hits.bind", NULL, TXT_STAT_HITS);
-#ifdef HAVE_AUTH
-  add_txt("auth.bind", NULL, TXT_STAT_AUTH);
-#endif
-  add_txt("servers.bind", NULL, TXT_STAT_SERVERS);
-  /* Pi-hole modification */
-  add_txt("privacylevel.pihole", NULL, TXT_PRIVACYLEVEL);
-  /************************/
-#endif
-  /******** Pi-hole modification ********/
-  add_txt("version.FTL", (char*)get_FTL_version(), 0 );
-  /**************************************/
-
+  /* See comment above make_servers(). Optimises server-read code. */
+  mark_servers(0);
+  
   while (1) 
     {
 #ifdef HAVE_GETOPT_LONG
@@ -5603,6 +5997,31 @@ void read_opts(int argc, char **argv, char *compile_opts)
     }
   else
     one_file(CONFFILE, LOPT_CONF_OPT);
+
+  /* Add TXT records if wanted */
+#ifndef NO_ID
+  if (!option_bool(OPT_NO_IDENT))
+    {
+      add_txt("version.bind", "dnsmasq-" VERSION, 0 );
+      add_txt("authors.bind", "Simon Kelley", 0);
+      add_txt("copyright.bind", COPYRIGHT, 0);
+      add_txt("cachesize.bind", NULL, TXT_STAT_CACHESIZE);
+      add_txt("insertions.bind", NULL, TXT_STAT_INSERTS);
+      add_txt("evictions.bind", NULL, TXT_STAT_EVICTIONS);
+      add_txt("misses.bind", NULL, TXT_STAT_MISSES);
+      add_txt("hits.bind", NULL, TXT_STAT_HITS);
+#ifdef HAVE_AUTH
+      add_txt("auth.bind", NULL, TXT_STAT_AUTH);
+#endif
+      add_txt("servers.bind", NULL, TXT_STAT_SERVERS);
+      /* Pi-hole modification */
+      add_txt("version.ftl", (char*)get_FTL_version(), 0 );
+      add_txt("api.ftl", NULL, TXT_API_DOMAIN);
+      add_txt("domain.api.ftl", NULL, TXT_API_DOMAIN);
+      add_txt("local.api.ftl", NULL, TXT_API_LOCAL);
+      /************************/
+    }
+#endif
 
   /* port might not be known when the address is parsed - fill in here */
   if (daemon->servers)
@@ -5784,7 +6203,16 @@ void read_opts(int argc, char **argv, char *compile_opts)
   /* If there's access-control config, then ignore --local-service, it's intended
      as a system default to keep otherwise unconfigured installations safe. */
   if (daemon->if_names || daemon->if_except || daemon->if_addrs || daemon->authserver)
-    reset_option_bool(OPT_LOCAL_SERVICE); 
+    {
+      reset_option_bool(OPT_LOCAL_SERVICE);
+      reset_option_bool(OPT_LOCALHOST_SERVICE);
+    }
+  else if (option_bool(OPT_LOCALHOST_SERVICE) && !option_bool(OPT_LOCAL_SERVICE))
+    {
+      /* listen only on localhost, emulate --interface=lo --bind-interfaces */
+      if_names_add(NULL);
+      set_option_bool(OPT_NOWILD);
+    }
 
   if (testmode)
     {
@@ -5792,3 +6220,13 @@ void read_opts(int argc, char **argv, char *compile_opts)
       exit(0);
     }
 }  
+
+/******************** Pi-hole extension ********************/
+void reset_usage_indicator(void)
+{
+  for (unsigned int i = 0; usage[i].opt != 0; i++)
+    if(usage[i].rept == ARG_USED_CL ||
+       usage[i].rept == ARG_USED_FILE)
+      usage[i].rept = ARG_ONE;
+}
+/**********************************************************/

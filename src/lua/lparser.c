@@ -128,7 +128,7 @@ static void checknext (LexState *ls, int c) {
 ** in line 'where' (if that is not the current line).
 */
 static void check_match (LexState *ls, int what, int who, int where) {
-  if (unlikely(!testnext(ls, what))) {
+  if (l_unlikely(!testnext(ls, what))) {
     if (where == ls->linenumber)  /* all in the same line? */
       error_expected(ls, what);  /* do not need a complex message */
     else {
@@ -222,26 +222,26 @@ static Vardesc *getlocalvardesc (FuncState *fs, int vidx) {
 
 
 /*
-** Convert 'nvar', a compiler index level, to it corresponding
-** stack index level. For that, search for the highest variable
-** below that level that is in the stack and uses its stack
-** index ('sidx').
+** Convert 'nvar', a compiler index level, to its corresponding
+** register. For that, search for the highest variable below that level
+** that is in a register and uses its register index ('ridx') plus one.
 */
-static int stacklevel (FuncState *fs, int nvar) {
+static int reglevel (FuncState *fs, int nvar) {
   while (nvar-- > 0) {
-    Vardesc *vd = getlocalvardesc(fs, nvar);  /* get variable */
-    if (vd->vd.kind != RDKCTC)  /* is in the stack? */
-      return vd->vd.sidx + 1;
+    Vardesc *vd = getlocalvardesc(fs, nvar);  /* get previous variable */
+    if (vd->vd.kind != RDKCTC)  /* is in a register? */
+      return vd->vd.ridx + 1;
   }
-  return 0;  /* no variables in the stack */
+  return 0;  /* no variables in registers */
 }
 
 
 /*
-** Return the number of variables in the stack for function 'fs'
+** Return the number of variables in the register stack for the given
+** function.
 */
 int luaY_nvarstack (FuncState *fs) {
-  return stacklevel(fs, fs->nactvar);
+  return reglevel(fs, fs->nactvar);
 }
 
 
@@ -267,7 +267,7 @@ static void init_var (FuncState *fs, expdesc *e, int vidx) {
   e->f = e->t = NO_JUMP;
   e->k = VLOCAL;
   e->u.var.vidx = vidx;
-  e->u.var.sidx = getlocalvardesc(fs, vidx)->vd.sidx;
+  e->u.var.ridx = getlocalvardesc(fs, vidx)->vd.ridx;
 }
 
 
@@ -310,12 +310,12 @@ static void check_readonly (LexState *ls, expdesc *e) {
 */
 static void adjustlocalvars (LexState *ls, int nvars) {
   FuncState *fs = ls->fs;
-  int stklevel = luaY_nvarstack(fs);
+  int reglevel = luaY_nvarstack(fs);
   int i;
   for (i = 0; i < nvars; i++) {
     int vidx = fs->nactvar++;
     Vardesc *var = getlocalvardesc(fs, vidx);
-    var->vd.sidx = stklevel++;
+    var->vd.ridx = reglevel++;
     var->vd.pidx = registerlocalvar(ls, fs, var->vd.name);
   }
 }
@@ -366,7 +366,7 @@ static int newupvalue (FuncState *fs, TString *name, expdesc *v) {
   FuncState *prev = fs->prev;
   if (v->k == VLOCAL) {
     up->instack = 1;
-    up->idx = v->u.var.sidx;
+    up->idx = v->u.var.ridx;
     up->kind = getlocalvardesc(prev, v->u.var.vidx)->vd.kind;
     lua_assert(eqstr(name, getlocalvardesc(prev, v->u.var.vidx)->vd.name));
   }
@@ -417,6 +417,17 @@ static void markupval (FuncState *fs, int level) {
 
 
 /*
+** Mark that current block has a to-be-closed variable.
+*/
+static void marktobeclosed (FuncState *fs) {
+  BlockCnt *bl = fs->bl;
+  bl->upval = 1;
+  bl->insidetbc = 1;
+  fs->needclose = 1;
+}
+
+
+/*
 ** Find a variable with the given name 'n'. If it is an upvalue, add
 ** this upvalue into all intermediate functions. If it is a global, set
 ** 'var' as 'void' as a flag.
@@ -457,6 +468,7 @@ static void singlevar (LexState *ls, expdesc *var) {
     expdesc key;
     singlevaraux(fs, ls->envn, var, 1);  /* get environment variable */
     lua_assert(var->k != VVOID);  /* this one must exist */
+    luaK_exp2anyregup(fs, var);  /* but could be a constant */
     codestring(&key, varname);  /* key is variable name */
     luaK_indexed(fs, var, &key);  /* env[varname] */
   }
@@ -489,12 +501,10 @@ static void adjust_assign (LexState *ls, int nvars, int nexps, expdesc *e) {
 }
 
 
-/*
-** Macros to limit the maximum recursion depth while parsing
-*/
-#define enterlevel(ls)	luaE_enterCcall((ls)->L)
+#define enterlevel(ls)	luaE_incCstack(ls->L)
 
-#define leavelevel(ls)	luaE_exitCcall((ls)->L)
+
+#define leavelevel(ls) ((ls)->L->nCcalls--)
 
 
 /*
@@ -511,15 +521,15 @@ static l_noret jumpscopeerror (LexState *ls, Labeldesc *gt) {
 
 /*
 ** Solves the goto at index 'g' to given 'label' and removes it
-** from the list of pending goto's.
+** from the list of pending gotos.
 ** If it jumps into the scope of some variable, raises an error.
 */
 static void solvegoto (LexState *ls, int g, Labeldesc *label) {
   int i;
-  Labellist *gl = &ls->dyd->gt;  /* list of goto's */
+  Labellist *gl = &ls->dyd->gt;  /* list of gotos */
   Labeldesc *gt = &gl->arr[g];  /* goto to be resolved */
   lua_assert(eqstr(gt->name, label->name));
-  if (unlikely(gt->nactvar < label->nactvar))  /* enter some scope? */
+  if (l_unlikely(gt->nactvar < label->nactvar))  /* enter some scope? */
     jumpscopeerror(ls, gt);
   luaK_patchlist(ls->fs, gt->pc, label->pc);
   for (i = g; i < gl->n - 1; i++)  /* remove goto from pending list */
@@ -570,7 +580,7 @@ static int newgotoentry (LexState *ls, TString *name, int line, int pc) {
 /*
 ** Solves forward jumps. Check whether new label 'lb' matches any
 ** pending gotos in current block and solves them. Return true
-** if any of the goto's need to close upvalues.
+** if any of the gotos need to close upvalues.
 */
 static int solvegotos (LexState *ls, Labeldesc *lb) {
   Labellist *gl = &ls->dyd->gt;
@@ -591,7 +601,7 @@ static int solvegotos (LexState *ls, Labeldesc *lb) {
 /*
 ** Create a new label with the given 'name' at the given 'line'.
 ** 'last' tells whether label is the last non-op statement in its
-** block. Solves all pending goto's to this new label and adds
+** block. Solves all pending gotos to this new label and adds
 ** a close instruction if necessary.
 ** Returns true iff it added a close instruction.
 */
@@ -622,7 +632,7 @@ static void movegotosout (FuncState *fs, BlockCnt *bl) {
   for (i = bl->firstgoto; i < gl->n; i++) {  /* for each pending goto */
     Labeldesc *gt = &gl->arr[i];
     /* leaving a variable scope? */
-    if (stacklevel(fs, gt->nactvar) > stacklevel(fs, bl->nactvar))
+    if (reglevel(fs, gt->nactvar) > reglevel(fs, bl->nactvar))
       gt->close |= bl->upval;  /* jump may need a close */
     gt->nactvar = bl->nactvar;  /* update goto level */
   }
@@ -663,20 +673,20 @@ static void leaveblock (FuncState *fs) {
   BlockCnt *bl = fs->bl;
   LexState *ls = fs->ls;
   int hasclose = 0;
-  int stklevel = stacklevel(fs, bl->nactvar);  /* level outside the block */
-  if (bl->isloop)  /* fix pending breaks? */
+  int stklevel = reglevel(fs, bl->nactvar);  /* level outside the block */
+  removevars(fs, bl->nactvar);  /* remove block locals */
+  lua_assert(bl->nactvar == fs->nactvar);  /* back to level on entry */
+  if (bl->isloop)  /* has to fix pending breaks? */
     hasclose = createlabel(ls, luaS_newliteral(ls->L, "break"), 0, 0);
-  if (!hasclose && bl->previous && bl->upval)
+  if (!hasclose && bl->previous && bl->upval)  /* still need a 'close'? */
     luaK_codeABC(fs, OP_CLOSE, stklevel, 0, 0);
-  fs->bl = bl->previous;
-  removevars(fs, bl->nactvar);
-  lua_assert(bl->nactvar == fs->nactvar);
   fs->freereg = stklevel;  /* free registers */
   ls->dyd->label.n = bl->firstlabel;  /* remove local labels */
-  if (bl->previous)  /* inner block? */
-    movegotosout(fs, bl);  /* update pending gotos to outer block */
+  fs->bl = bl->previous;  /* current block now is previous one */
+  if (bl->previous)  /* was it a nested block? */
+    movegotosout(fs, bl);  /* update pending gotos to enclosing block */
   else {
-    if (bl->firstgoto < ls->dyd->gt.n)  /* pending gotos in outer block? */
+    if (bl->firstgoto < ls->dyd->gt.n)  /* still pending gotos? */
       undefgoto(ls, &ls->dyd->gt.arr[bl->firstgoto]);  /* error */
   }
 }
@@ -947,7 +957,7 @@ static void setvararg (FuncState *fs, int nparams) {
 
 
 static void parlist (LexState *ls) {
-  /* parlist -> [ param { ',' param } ] */
+  /* parlist -> [ {NAME ','} (NAME | '...') ] */
   FuncState *fs = ls->fs;
   Proto *f = fs->f;
   int nparams = 0;
@@ -955,12 +965,12 @@ static void parlist (LexState *ls) {
   if (ls->t.token != ')') {  /* is 'parlist' not empty? */
     do {
       switch (ls->t.token) {
-        case TK_NAME: {  /* param -> NAME */
+        case TK_NAME: {
           new_localvar(ls, str_checkname(ls));
           nparams++;
           break;
         }
-        case TK_DOTS: {  /* param -> '...' */
+        case TK_DOTS: {
           luaX_next(ls);
           isvararg = 1;
           break;
@@ -1332,13 +1342,13 @@ static void check_conflict (LexState *ls, struct LHS_assign *lh, expdesc *v) {
         }
       }
       else {  /* table is a register */
-        if (v->k == VLOCAL && lh->v.u.ind.t == v->u.var.sidx) {
+        if (v->k == VLOCAL && lh->v.u.ind.t == v->u.var.ridx) {
           conflict = 1;  /* table is the local being assigned now */
           lh->v.u.ind.t = extra;  /* assignment will use safe copy */
         }
         /* is index the local being assigned? */
         if (lh->v.k == VINDEXED && v->k == VLOCAL &&
-            lh->v.u.ind.idx == v->u.var.sidx) {
+            lh->v.u.ind.idx == v->u.var.ridx) {
           conflict = 1;
           lh->v.u.ind.idx = extra;  /* previous assignment will use safe copy */
         }
@@ -1348,7 +1358,7 @@ static void check_conflict (LexState *ls, struct LHS_assign *lh, expdesc *v) {
   if (conflict) {
     /* copy upvalue/local value to a temporary (in position 'extra') */
     if (v->k == VLOCAL)
-      luaK_codeABC(fs, OP_MOVE, extra, v->u.var.sidx, 0);
+      luaK_codeABC(fs, OP_MOVE, extra, v->u.var.ridx, 0);
     else
       luaK_codeABC(fs, OP_GETUPVAL, extra, v->u.info, 0);
     luaK_reserveregs(fs, 1);
@@ -1413,7 +1423,7 @@ static void gotostat (LexState *ls) {
     newgotoentry(ls, name, line, luaK_jump(fs));
   else {  /* found a label */
     /* backward jump; will be resolved here */
-    int lblevel = stacklevel(fs, lb->nactvar);  /* label level */
+    int lblevel = reglevel(fs, lb->nactvar);  /* label level */
     if (luaY_nvarstack(fs) > lblevel)  /* leaving the scope of a variable? */
       luaK_codeABC(fs, OP_CLOSE, lblevel, 0, 0);
     /* create jump and link it to the label */
@@ -1437,7 +1447,7 @@ static void breakstat (LexState *ls) {
 */
 static void checkrepeated (LexState *ls, TString *name) {
   Labeldesc *lb = findlabel(ls, name);
-  if (unlikely(lb != NULL)) {  /* already defined? */
+  if (l_unlikely(lb != NULL)) {  /* already defined? */
     const char *msg = "label '%s' already defined on line %d";
     msg = luaO_pushfstring(ls->L, msg, getstr(name), lb->line);
     luaK_semerror(ls, msg);  /* error */
@@ -1490,7 +1500,7 @@ static void repeatstat (LexState *ls, int line) {
   if (bl2.upval) {  /* upvalues? */
     int exit = luaK_jump(fs);  /* normal exit must jump over fix */
     luaK_patchtohere(fs, condexit);  /* repetition must close upvalues */
-    luaK_codeABC(fs, OP_CLOSE, stacklevel(fs, bl2.nactvar), 0, 0);
+    luaK_codeABC(fs, OP_CLOSE, reglevel(fs, bl2.nactvar), 0, 0);
     condexit = luaK_jump(fs);  /* repeat after closing upvalues */
     luaK_patchtohere(fs, exit);  /* normal exit comes to here */
   }
@@ -1522,7 +1532,7 @@ static void fixforjump (FuncState *fs, int pc, int dest, int back) {
   int offset = dest - (pc + 1);
   if (back)
     offset = -offset;
-  if (unlikely(offset > MAXARG_Bx))
+  if (l_unlikely(offset > MAXARG_Bx))
     luaX_syntaxerror(fs->ls, "control structure too long");
   SETARG_Bx(*jmp, offset);
 }
@@ -1601,7 +1611,7 @@ static void forlist (LexState *ls, TString *indexname) {
   line = ls->linenumber;
   adjust_assign(ls, 4, explist(ls, &e), &e);
   adjustlocalvars(ls, 4);  /* control variables */
-  markupval(fs, fs->nactvar);  /* last control var. must be closed */
+  marktobeclosed(fs);  /* last control var. must be closed */
   luaK_checkstack(fs, 3);  /* extra space to call generator */
   forbody(ls, base, line, nvars - 4, 1);
 }
@@ -1625,59 +1635,21 @@ static void forstat (LexState *ls, int line) {
 }
 
 
-/*
-** Check whether next instruction is a single jump (a 'break', a 'goto'
-** to a forward label, or a 'goto' to a backward label with no variable
-** to close). If so, set the name of the 'label' it is jumping to
-** ("break" for a 'break') or to where it is jumping to ('target') and
-** return true. If not a single jump, leave input unchanged, to be
-** handled as a regular statement.
-*/
-static int issinglejump (LexState *ls, TString **label, int *target) {
-  if (testnext(ls, TK_BREAK)) {  /* a break? */
-    *label = luaS_newliteral(ls->L, "break");
-    return 1;
-  }
-  else if (ls->t.token != TK_GOTO || luaX_lookahead(ls) != TK_NAME)
-    return 0;  /* not a valid goto */
-  else {
-    TString *lname = ls->lookahead.seminfo.ts;  /* label's id */
-    Labeldesc *lb = findlabel(ls, lname);
-    if (lb) {  /* a backward jump? */
-      /* does it need to close variables? */
-      if (luaY_nvarstack(ls->fs) > stacklevel(ls->fs, lb->nactvar))
-        return 0;  /* not a single jump; cannot optimize */
-      *target = lb->pc;
-    }
-    else  /* jump forward */
-      *label = lname;
-    luaX_next(ls);  /* skip goto */
-    luaX_next(ls);  /* skip name */
-    return 1;
-  }
-}
-
-
 static void test_then_block (LexState *ls, int *escapelist) {
   /* test_then_block -> [IF | ELSEIF] cond THEN block */
   BlockCnt bl;
-  int line;
   FuncState *fs = ls->fs;
-  TString *jlb = NULL;
-  int target = NO_JUMP;
   expdesc v;
   int jf;  /* instruction to skip 'then' code (if condition is false) */
   luaX_next(ls);  /* skip IF or ELSEIF */
   expr(ls, &v);  /* read condition */
   checknext(ls, TK_THEN);
-  line = ls->linenumber;
-  if (issinglejump(ls, &jlb, &target)) {  /* 'if x then goto' ? */
-    luaK_goiffalse(ls->fs, &v);  /* will jump to label if condition is true */
+  if (ls->t.token == TK_BREAK) {  /* 'if x then break' ? */
+    int line = ls->linenumber;
+    luaK_goiffalse(ls->fs, &v);  /* will jump if condition is true */
+    luaX_next(ls);  /* skip 'break' */
     enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-    if (jlb != NULL)  /* forward jump? */
-      newgotoentry(ls, jlb, line, v.t);  /* will be resolved later */
-    else  /* backward jump */
-      luaK_patchlist(fs, v.t, target);  /* jump directly to 'target' */
+    newgotoentry(ls, luaS_newliteral(ls->L, "break"), line, v.t);
     while (testnext(ls, ';')) {}  /* skip semicolons */
     if (block_follow(ls, 0)) {  /* jump is the entire block? */
       leaveblock(fs);
@@ -1686,7 +1658,7 @@ static void test_then_block (LexState *ls, int *escapelist) {
     else  /* must skip over 'then' part if condition is false */
       jf = luaK_jump(fs);
   }
-  else {  /* regular case (not a jump) */
+  else {  /* regular case (not a break) */
     luaK_goiftrue(ls->fs, &v);  /* skip over block if condition is false */
     enterblock(fs, &bl, 0);
     jf = v.f;
@@ -1743,18 +1715,16 @@ static int getlocalattribute (LexState *ls) {
 }
 
 
-static void checktoclose (LexState *ls, int level) {
+static void checktoclose (FuncState *fs, int level) {
   if (level != -1) {  /* is there a to-be-closed variable? */
-    FuncState *fs = ls->fs;
-    markupval(fs, level + 1);
-    fs->bl->insidetbc = 1;  /* in the scope of a to-be-closed variable */
-    luaK_codeABC(fs, OP_TBC, stacklevel(fs, level), 0, 0);
+    marktobeclosed(fs);
+    luaK_codeABC(fs, OP_TBC, reglevel(fs, level), 0, 0);
   }
 }
 
 
 static void localstat (LexState *ls) {
-  /* stat -> LOCAL ATTRIB NAME {',' ATTRIB NAME} ['=' explist] */
+  /* stat -> LOCAL NAME ATTRIB { ',' NAME ATTRIB } ['=' explist] */
   FuncState *fs = ls->fs;
   int toclose = -1;  /* index of to-be-closed variable (if any) */
   Vardesc *var;  /* last variable */
@@ -1791,7 +1761,7 @@ static void localstat (LexState *ls) {
     adjust_assign(ls, nvars, nexps, &e);
     adjustlocalvars(ls, nvars);
   }
-  checktoclose(ls, toclose);
+  checktoclose(fs, toclose);
 }
 
 
@@ -1816,6 +1786,7 @@ static void funcstat (LexState *ls, int line) {
   luaX_next(ls);  /* skip FUNCTION */
   ismethod = funcname(ls, &v);
   body(ls, &b, ismethod, line);
+  check_readonly(ls, &v);
   luaK_storevar(ls->fs, &v, &b);
   luaK_fixline(ls->fs, line);  /* definition "happens" in the first line */
 }
@@ -1973,10 +1944,10 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   LexState lexstate;
   FuncState funcstate;
   LClosure *cl = luaF_newLclosure(L, 1);  /* create main closure */
-  setclLvalue2s(L, L->top, cl);  /* anchor it (to avoid being collected) */
+  setclLvalue2s(L, L->top.p, cl);  /* anchor it (to avoid being collected) */
   luaD_inctop(L);
   lexstate.h = luaH_new(L);  /* create table for scanner */
-  sethvalue2s(L, L->top, lexstate.h);  /* anchor it */
+  sethvalue2s(L, L->top.p, lexstate.h);  /* anchor it */
   luaD_inctop(L);
   funcstate.f = cl->p = luaF_newproto(L);
   luaC_objbarrier(L, cl, cl->p);
@@ -1990,7 +1961,7 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
-  L->top--;  /* remove scanner's table */
+  L->top.p--;  /* remove scanner's table */
   return cl;  /* closure is on the stack, too */
 }
 

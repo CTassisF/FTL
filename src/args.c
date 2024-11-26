@@ -13,6 +13,12 @@
 #include "dnsmasq/dnsmasq.h"
 #undef __USE_XOPEN
 
+#include <nettle/bignum.h>
+#if !defined(NETTLE_VERSION_MAJOR)
+#  define NETTLE_VERSION_MAJOR 2
+#  define NETTLE_VERSION_MINOR 0
+#endif
+
 #include "FTL.h"
 #include "args.h"
 #include "version.h"
@@ -26,10 +32,14 @@
 #include "shmem.h"
 // LUA dependencies
 #include "lua/ftl_lua.h"
+// gravity_parseList()
+#include "tools/gravity-parseList.h"
 // run_dhcp_discover()
-#include "dhcp-discover.h"
+#include "tools/dhcp-discover.h"
+// run_arp_scan()
+#include "tools/arp-scan.h"
 // defined in dnsmasq.c
-extern void print_dnsmasq_version(void);
+extern void print_dnsmasq_version(const char *yellow, const char *green, const char *bold, const char *normal);
 
 // defined in database/shell.c
 extern int sqlite3_shell_main(int argc, char **argv);
@@ -39,7 +49,94 @@ bool daemonmode = true, cli_mode = false;
 int argc_dnsmasq = 0;
 const char** argv_dnsmasq = NULL;
 
-static inline bool strEndsWith(const char *input, const char *end){
+// Extended SGR sequence:
+//
+// "\x1b[%dm"
+//
+// where %d is one of the following values for commonly supported colors:
+//
+// 0: reset colors/style
+// 1: bold
+// 4: underline
+// 30 - 37: black, red, green, yellow, blue, magenta, cyan, and white text
+// 40 - 47: black, red, green, yellow, blue, magenta, cyan, and white background
+//
+// https://en.wikipedia.org/wiki/ANSI_escape_code#SGR
+//
+#define COL_NC		"\x1b[0m"  // normal font
+#define COL_BOLD	"\x1b[1m"  // bold font
+#define COL_ITALIC	"\x1b[3m"  // italic font
+#define COL_ULINE	"\x1b[4m"  // underline font
+#define COL_GREEN	"\x1b[32m" // normal foreground color
+#define COL_YELLOW	"\x1b[33m" // normal foreground color
+#define COL_RED		"\x1b[91m" // bright foreground color
+#define COL_BLUE	"\x1b[94m" // bright foreground color
+#define COL_PURPLE	"\x1b[95m" // bright foreground color
+#define COL_CYAN	"\x1b[96m" // bright foreground color
+
+static inline bool __attribute__ ((pure)) is_term(void)
+{
+	// test whether STDOUT refers to a terminal
+	return isatty(fileno(stdout)) == 1;
+}
+
+// Returns green [✓]
+const char __attribute__ ((pure)) *cli_tick(void)
+{
+	return is_term() ? "["COL_GREEN"✓"COL_NC"]" : "[✓]";
+}
+
+// Returns red [✗]
+const char __attribute__ ((pure)) *cli_cross(void)
+{
+	return is_term() ? "["COL_RED"✗"COL_NC"]" : "[✗]";
+}
+
+// Returns [i]
+const char __attribute__ ((pure)) *cli_info(void)
+{
+	return is_term() ? COL_BOLD"[i]"COL_NC : "[i]";
+}
+
+// Returns [?]
+const char __attribute__ ((const)) *cli_qst(void)
+{
+	return "[?]";
+}
+
+// Returns green "done!""
+const char __attribute__ ((pure)) *cli_done(void)
+{
+	return is_term() ? COL_GREEN"done!"COL_NC : "done!";
+}
+
+// Sets font to bold
+const char __attribute__ ((pure)) *cli_bold(void)
+{
+	return is_term() ? COL_BOLD : "";
+}
+
+// Resets font to normal
+const char __attribute__ ((pure)) *cli_normal(void)
+{
+	return is_term() ? COL_NC : "";
+}
+
+// Set color if STDOUT is a terminal
+static const char __attribute__ ((pure)) *cli_color(const char *color)
+{
+	return is_term() ? color : "";
+}
+
+// Go back to beginning of line and erase to end of line if STDOUT is a terminal
+const char __attribute__ ((pure)) *cli_over(void)
+{
+	// \x1b[K is the ANSI escape sequence for "erase to end of line"
+	return is_term() ? "\r\x1b[K" : "\r";
+}
+
+static inline bool strEndsWith(const char *input, const char *end)
+{
 	return strcmp(input + strlen(input) - strlen(end), end) == 0;
 }
 
@@ -77,6 +174,39 @@ void parse_args(int argc, char* argv[])
 	if(strEndsWith(argv[0], "sqlite3") ||
 	   (argc > 1 && strEndsWith(argv[1], ".db")))
 			exit(sqlite3_shell_main(argc, argv));
+
+	// If the first argument is "gravity" (e.g., /usr/bin/pihole-FTL gravity),
+	// we offer some specialized gravity tools
+	if(argc > 1 && strcmp(argv[1], "gravity") == 0)
+	{
+		// pihole-FTL gravity parseList <infile> <outfile> <adlistID>
+		if(argc == 6 && strcmp(argv[2], "parseList") == 0)
+		{
+			// Parse the given list and write the result to the given file
+			exit(gravity_parseList(argv[3], argv[4], argv[5]));
+		}
+
+		printf("Incorrect usage of pihole-FTL gravity subcommand\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// DHCP discovery mode
+	if(argc > 1 && strcmp(argv[1], "dhcp-discover") == 0)
+	{
+		// Enable stdout printing
+		cli_mode = true;
+		exit(run_dhcp_discover());
+	}
+
+	// ARP scanning mode
+	if(argc > 1 && strcmp(argv[1], "arp-scan") == 0)
+	{
+		// Enable stdout printing
+		cli_mode = true;
+		const bool scan_all = argc > 2 && strcmp(argv[2], "-a") == 0;
+		const bool extreme_mode = argc > 2 && strcmp(argv[2], "-x") == 0;
+		exit(run_arp_scan(scan_all, extreme_mode));
+	}
 
 	// start from 1, as argv[0] is the executable name
 	for(int i = 1; i < argc; i++)
@@ -118,6 +248,21 @@ void parse_args(int argc, char* argv[])
 					argv2[5 + j] = argv[i + 2 + j];
 				exit(sqlite3_shell_main(argc2, argv2));
 			}
+			// Special non-interative mode
+			else if(i+1 < argc && strcmp(argv[i+1], "-ni") == 0)
+			{
+				int argc2 = argc - i + 4 - 2;
+				char **argv2 = calloc(argc2, sizeof(char*));
+				argv2[0] = argv[0]; // Application name
+				argv2[1] = (char*)"-batch";
+				argv2[2] = (char*)"-init";
+				argv2[3] = (char*)"/dev/null";
+				// i = "sqlite3"
+				// i+1 = "-ni"
+				for(int j = 0; j < argc - i - 2; j++)
+					argv2[4 + j] = argv[i + 2 + j];
+				exit(sqlite3_shell_main(argc2, argv2));
+			}
 			else
 				exit(sqlite3_shell_main(argc - i, &argv[i]));
 		}
@@ -131,8 +276,7 @@ void parse_args(int argc, char* argv[])
 			const char *arg[2];
 			arg[0] = "";
 			arg[1] = "--test";
-			main_dnsmasq(2, arg);
-			ok = true;
+			exit(main_dnsmasq(2, (char**)arg));
 		}
 
 		// If we find "--" we collect everything behind that for dnsmasq
@@ -141,21 +285,21 @@ void parse_args(int argc, char* argv[])
 			// Remember that the rest is for dnsmasq ...
 			consume_for_dnsmasq = true;
 
-			// Special command interpretation for "pihole-FTL -- --help dhcp"
-			if(argc > 1 && strcmp(argv[argc-2], "--help") == 0 && strcmp(argv[argc-1], "dhcp") == 0)
-			{
-				display_opts();
-				exit(EXIT_SUCCESS);
-			}
-			// and "pihole-FTL -- --help dhcp6"
-			if(argc > 1 && strcmp(argv[argc-2], "--help") == 0 && strcmp(argv[argc-1], "dhcp6") == 0)
-			{
-				display_opts6();
-				exit(EXIT_SUCCESS);
-			}
-
 			// ... and skip the current argument ("--")
 			continue;
+		}
+
+		// List available DHCPv4 config options
+		if(strcmp(argv[i], "--list-dhcp") == 0 || strcmp(argv[i], "--list-dhcp4") == 0)
+		{
+			display_opts();
+			exit(EXIT_SUCCESS);
+		}
+		// List available DHCPv6 config options
+		if(strcmp(argv[i], "--list-dhcp6") == 0)
+		{
+			display_opts6();
+			exit(EXIT_SUCCESS);
 		}
 
 		// If consume_for_dnsmasq is true, we collect all remaining options for
@@ -232,21 +376,30 @@ void parse_args(int argc, char* argv[])
 		// Extended version output
 		if(strcmp(argv[i], "-vv") == 0)
 		{
+			const char *bold = cli_bold();
+			const char *normal = cli_normal();
+			const char *green = cli_color(COL_GREEN);
+			const char *yellow = cli_color(COL_YELLOW);
+
 			// Print FTL version
-			printf("****************************** FTL **********************************\n");
-			printf("Version:         %s\n", get_FTL_version());
-			printf("Branch:          %s\n", GIT_BRANCH);
-			printf("Commit:          %s (%s)\n", GIT_HASH, GIT_DATE);
-			printf("Architecture:    %s\n", FTL_ARCH);
-			printf("Compiler:        %s\n\n", FTL_CC);
+			printf("****************************** %s%sFTL%s **********************************\n",
+			       yellow, bold, normal);
+			printf("Version:         %s%s%s%s\n",
+			       green, bold, get_FTL_version(), normal);
+			printf("Branch:          " GIT_BRANCH "\n");
+			printf("Commit:          " GIT_HASH " (" GIT_DATE ")\n");
+			printf("Architecture:    " FTL_ARCH "\n");
+			printf("Compiler:        " FTL_CC "\n\n");
 
 			// Print dnsmasq version and compile time options
-			print_dnsmasq_version();
+			print_dnsmasq_version(yellow, green, bold, normal);
 
 			// Print SQLite3 version and compile time options
-			printf("****************************** SQLite3 ******************************\n");
-			printf("Version:         %s\n", sqlite3_libversion());
-			printf("Compile options: ");
+			printf("****************************** %s%sSQLite3%s ******************************\n",
+			       yellow, bold, normal);
+			printf("Version:         %s%s%s%s\n",
+			       green, bold, sqlite3_libversion(), normal);
+			printf("Features:        ");
 			unsigned int o = 0;
 			const char *opt = NULL;
 			while((opt = sqlite3_compileoption_get(o++)) != NULL)
@@ -255,9 +408,19 @@ void parse_args(int argc, char* argv[])
 					printf(" ");
 				printf("%s", opt);
 			}
-			printf("\n");
-			printf("******************************** LUA ********************************\n");
-			printf(LUA_COPYRIGHT"\n");
+			printf("\n\n");
+			printf("******************************** %s%sLUA%s ********************************\n",
+			       yellow, bold, normal);
+			printf("Version:         %s%s" LUA_VERSION_MAJOR "." LUA_VERSION_MINOR"%s\n",
+			       green, bold, normal);
+			printf("Libraries:       ");
+			print_embedded_scripts();
+			printf("\n\n");
+			printf("***************************** %s%sLIBNETTLE%s *****************************\n",
+			       yellow, bold, normal);
+			printf("Version:         %s%s" xstr(NETTLE_VERSION_MAJOR) "." xstr(NETTLE_VERSION_MINOR) "%s\n",
+			       green, bold, normal);
+			printf("GMP:             %s\n", NETTLE_USE_MINI_GMP ? "Mini" : "Full");
 			exit(EXIT_SUCCESS);
 		}
 
@@ -272,6 +435,12 @@ void parse_args(int argc, char* argv[])
 		   strcmp(argv[i], "branch") == 0)
 		{
 			printf("%s\n",GIT_BRANCH);
+			exit(EXIT_SUCCESS);
+		}
+
+		if(strcmp(argv[i], "--hash") == 0)
+		{
+			printf("%s\n",GIT_HASH);
 			exit(EXIT_SUCCESS);
 		}
 
@@ -306,44 +475,103 @@ void parse_args(int argc, char* argv[])
 			}
 		}
 
-		// Regex test mode
-		if(strcmp(argv[i], "dhcp-discover") == 0)
-		{
-			// Enable stdout printing
-			cli_mode = true;
-			exit(run_dhcp_discover());
-		}
-
 		// List of implemented arguments
 		if(strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "help") == 0 || strcmp(argv[i], "--help") == 0)
 		{
-			printf("pihole-FTL - The Pi-hole FTL engine\n\n");
-			printf("Usage:    sudo service pihole-FTL <action>\n");
-			printf("where '<action>' is one of start / stop / restart\n\n");
-			printf("Available arguments:\n");
-			printf("\t    debug           More verbose logging,\n");
-			printf("\t                    don't go into daemon mode\n");
-			printf("\t    test            Don't start pihole-FTL but\n");
-			printf("\t                    instead quit immediately\n");
-			printf("\t-v, version         Return FTL version\n");
-			printf("\t-vv                 Return more version information\n");
-			printf("\t-t, tag             Return git tag\n");
-			printf("\t-b, branch          Return git branch\n");
-			printf("\t-f, no-daemon       Don't go into daemon mode\n");
-			printf("\t-h, help            Display this help and exit\n");
-			printf("\tdnsmasq-test        Test syntax of dnsmasq's\n");
-			printf("\t                    config files and exit\n");
-			printf("\tregex-test str      Test str against all regular\n");
+			const char *bold = cli_bold();
+			const char *normal = cli_normal();
+			const char *blue = cli_color(COL_BLUE);
+			const char *cyan = cli_color(COL_CYAN);
+			const char *green = cli_color(COL_GREEN);
+			const char *yellow = cli_color(COL_YELLOW);
+			const char *purple = cli_color(COL_PURPLE);
+
+			printf("%sThe Pi-hole FTL engine - %s%s\n\n", bold, get_FTL_version(), normal);
+			printf("Typically, pihole-FTL runs as a system service and is controlled\n");
+			printf("by %ssudo service pihole-FTL %s<action>%s where %s<action>%s is one out\n", green, purple, normal, purple, normal);
+			printf("of %sstart%s, %sstop%s, or %srestart%s.\n\n", green, normal, green, normal, green, normal);
+			printf("pihole-FTL exposes some features going beyond the standard\n");
+			printf("%sservice pihole-FTL%s command. These are:\n\n", green, normal);
+
+			printf("%sVersion information:%s\n", yellow, normal);
+			printf("\t%s-v%s, %sversion%s         Return FTL version\n", green, normal, green, normal);
+			printf("\t%s-vv%s                 Return verbose version information\n", green, normal);
+			printf("\t%s-t%s, %stag%s             Return git tag\n", green, normal, green, normal);
+			printf("\t%s-b%s, %sbranch%s          Return git branch\n", green, normal, green, normal);
+			printf("\t%s--hash%s              Return git commit hash\n\n", green, normal);
+
+			printf("%sRegular expression testing:%s\n", yellow, normal);
+			printf("\t%sregex-test %sstr%s      Test %sstr%s against all regular\n", green, blue, normal, blue, normal);
 			printf("\t                    expressions in the database\n");
-			printf("\tregex-test str rgx  Test str against regular expression\n");
-			printf("\t                    given by rgx\n");
-			printf("\t--lua, lua          FTL's lua interpreter\n");
-			printf("\t--luac, luac        FTL's lua compiler\n");
-			printf("\tdhcp-discover       Discover DHCP servers in the local\n");
+			printf("\t%sregex-test %sstr %srgx%s  Test %sstr%s against regular expression\n", green, blue, cyan, normal, blue, normal);
+			printf("\t                    given by regular expression %srgx%s\n\n", cyan, normal);
+
+			printf("    Example: %spihole-FTL regex-test %ssomebad.domain %sbad%s\n", green, blue, cyan, normal);
+			printf("    to test %ssomebad.domain%s against %sbad%s\n\n", blue, normal, cyan, normal);
+			printf("    An optional %s-q%s prevents any output (exit code testing):\n", purple, normal);
+			printf("    %spihole-FTL %s-q%s regex-test %ssomebad.domain %sbad%s\n\n", green, purple, green, blue, cyan, normal);
+
+			printf("%sEmbedded Lua engine:%s\n", yellow, normal);
+			printf("\t%s--lua%s, %slua%s          FTL's lua interpreter\n", green, normal, green, normal);
+			printf("\t%s--luac%s, %sluac%s        FTL's lua compiler\n\n", green, normal, green, normal);
+
+			printf("    Usage: %spihole-FTL lua %s[OPTIONS] [SCRIPT [ARGS]]%s\n\n", green, cyan, normal);
+			printf("    Options:\n\n");
+			printf("    - %s[OPTIONS]%s is an optional set of options. All available\n", cyan, normal);
+			printf("      options can be seen by running %spihole-FTL lua --help%s\n", green, normal);
+			printf("    - %s[SCRIPT]%s is the optional name of a Lua script.\n", cyan, normal);
+			printf("      If this script does not exist, an interactive shell is\n");
+			printf("      started instead.\n");
+			printf("    - %s[SCRIPT [ARGS]]%s can be used to pass optional args to\n", cyan, normal);
+			printf("      the script.\n\n");
+
+			printf("%sEmbedded SQLite3 shell:%s\n", yellow, normal);
+			printf("\t%ssql%s, %ssqlite3%s                      FTL's SQLite3 shell\n", green, normal, green, normal);
+
+			printf("    Usage: %spihole-FTL sqlite3 %s[OPTIONS] [FILENAME] [SQL]%s\n\n", green, cyan, normal);
+			printf("    Options:\n\n");
+			printf("    - %s[OPTIONS]%s is an optional set of options. All available\n", cyan, normal);
+			printf("      options can be found in %spihole-FTL sqlite3 --help%s.\n", green, normal);
+			printf("      The first option can be either %s-h%s or %s-ni%s, see below.\n", purple, normal, purple, normal);
+			printf("    - %s[FILENAME]%s is the optional name of an SQLite database.\n", cyan, normal);
+			printf("      A new database is created if the file does not previously\n");
+			printf("      exist. If this argument is omitted, SQLite3 will use a\n");
+			printf("      transient in-memory database instead.\n");
+			printf("    - %s[SQL]%s is an optional SQL statement to be executed. If\n", cyan, normal);
+			printf("      omitted, an interactive shell is started instead.\n\n");
+			printf("    There are two special %spihole-FTL sqlite3%s mode switches:\n", green, normal);
+			printf("    %s-h%s  %shuman-readable%s mode:\n", purple, normal, bold, normal);
+			printf("        In this mode, the output of the shell is formatted in\n");
+			printf("        a human-readable way. This is especially useful for\n");
+			printf("        debugging purposes. %s-h%s is a shortcut for\n", purple, normal);
+			printf("        %spihole-FTL sqlite3 %s-column -header -nullvalue '(null)'%s\n\n", green, purple, normal);
+			printf("    %s-ni%s %snon-interative%s mode\n", purple, normal, bold, normal);
+			printf("        In this mode, batch mode is enforced and any possibly\n");
+			printf("        existing .sqliterc file is ignored. %s-ni%s is a shortcut\n", purple, normal);
+			printf("        for %spihole-FTL sqlite3 %s-batch -init /dev/null%s\n\n", green, purple, normal);
+			printf("    Usage: %spihole-FTL sqlite3 %s-ni %s[OPTIONS] [FILENAME] [SQL]%s\n\n", green, purple, cyan, normal);
+
+			printf("%sEmbedded dnsmasq options:%s\n", yellow, normal);
+			printf("\t%sdnsmasq-test%s        Test syntax of dnsmasq's config\n", green, normal);
+			printf("\t%s--list-dhcp4%s        List known DHCPv4 config options\n", green, normal);
+			printf("\t%s--list-dhcp6%s        List known DHCPv6 config options\n\n", green, normal);
+
+			printf("%sDebugging and special use:%s\n", yellow, normal);
+			printf("\t%sd%s, %sdebug%s            Enter debugging mode\n", green, normal, green, normal);
+			printf("\t%stest%s                Don't start pihole-FTL but instead\n", green, normal);
+			printf("\t                    quit immediately\n");
+			printf("\t%s-f%s, %sno-daemon%s       Don't go into daemon mode\n\n", green, normal, green, normal);
+
+			printf("%sOther:%s\n", yellow, normal);
+			printf("\t%sdhcp-discover%s       Discover DHCP servers in the local\n", green, normal);
 			printf("\t                    network\n");
-			printf("\tsql, sqlite3        FTL's SQLite3 shell\n");
-			printf("\tsql -h, sqlite3 -h  FTL's SQLite3 shell (human-readable mode)\n");
-			printf("\n\nOnline help: https://github.com/pi-hole/FTL\n");
+			printf("\t%sarp-scan %s[-a/-x]%s    Use ARP to scan local network for\n", green, cyan, normal);
+			printf("\t                    possible IP conflicts\n");
+			printf("\t                    Append %s-a%s to force scan on all\n", cyan, normal);
+			printf("\t                    interfaces\n");
+			printf("\t                    Append %s-x%s to force scan on all\n", cyan, normal);
+			printf("\t                    interfaces and scan 10x more often\n");
+			printf("\t%s-h%s, %shelp%s            Display this help and exit\n\n", green, normal, green, normal);
 			exit(EXIT_SUCCESS);
 		}
 
@@ -375,78 +603,4 @@ void parse_args(int argc, char* argv[])
 			exit(EXIT_FAILURE);
 		}
 	}
-}
-
-// Extended SGR sequence:
-//
-// "\x1b[%dm"
-//
-// where %d is one of the following values for commonly supported colors:
-//
-// 0: reset colors/style
-// 1: bold
-// 4: underline
-// 30 - 37: black, red, green, yellow, blue, magenta, cyan, and white text
-// 40 - 47: black, red, green, yellow, blue, magenta, cyan, and white background
-//
-// https://en.wikipedia.org/wiki/ANSI_escape_code#SGR
-//
-#define COL_NC		"\x1b[0m"  // normal font
-#define COL_BOLD	"\x1b[1m"  // bold font
-#define COL_ITALIC	"\x1b[3m"  // italic font
-#define COL_ULINE	"\x1b[4m"  // underline font
-#define COL_GREEN	"\x1b[32m" // normal foreground color
-#define COL_YELLOW	"\x1b[33m" // normal foreground color
-#define COL_GRAY	"\x1b[90m" // bright foreground color
-#define COL_RED		"\x1b[91m" // bright foreground color
-#define COL_BLUE	"\x1b[94m" // bright foreground color
-#define COL_PURPLE	"\x1b[95m" // bright foreground color
-#define COL_CYAN	"\x1b[96m" // bright foreground color
-
-static inline bool __attribute__ ((const)) is_term(void)
-{
-	// test whether STDOUT refers to a terminal
-	return isatty(fileno(stdout)) == 1;
-}
-
-// Returns green [✓]
-const char __attribute__ ((const)) *cli_tick(void)
-{
-	return is_term() ? "["COL_GREEN"✓"COL_NC"]" : "[✓]";
-}
-
-// Returns red [✗]
-const char __attribute__ ((const)) *cli_cross(void)
-{
-	return is_term() ? "["COL_RED"✗"COL_NC"]" : "[✗]";
-}
-
-// Returns [i]
-const char __attribute__ ((const)) *cli_info(void)
-{
-	return is_term() ? COL_BOLD"[i]"COL_NC : "[i]";
-}
-
-// Returns [?]
-const char __attribute__ ((const)) *cli_qst(void)
-{
-	return "[?]";
-}
-
-// Returns green "done!""
-const char __attribute__ ((const)) *cli_done(void)
-{
-	return is_term() ? COL_GREEN"done!"COL_NC : "done!";
-}
-
-// Sets font to bold
-const char __attribute__ ((const)) *cli_bold(void)
-{
-	return is_term() ? COL_BOLD : "";
-}
-
-// Resets font to normal
-const char __attribute__ ((const)) *cli_normal(void)
-{
-	return is_term() ? COL_NC : "";
 }
